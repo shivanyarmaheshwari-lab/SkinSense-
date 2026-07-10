@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import streamlit as st
 
 
@@ -5,6 +7,8 @@ st.set_page_config(page_title="SkinSense", layout="wide", initial_sidebar_state=
 
 
 OPTIONS = ["Choose one", "Yes", "No", "I don't know", "Maybe"]
+GOOGLE_SHEET_ID = "1VCwoQWGVI-9y7m9WGlWQlM4nSZ4Hs0F6TqexuuMYbPU"
+GOOGLE_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 
 DISEASES = {
@@ -65,6 +69,7 @@ def init_state():
     st.session_state.setdefault("screen", "language")
     st.session_state.setdefault("language", "English")
     st.session_state.setdefault("user_name", "")
+    st.session_state.setdefault("logged_in", False)
     st.session_state.setdefault("uploaded_name", "")
     st.session_state.setdefault("prediction", None)
     st.session_state.setdefault("chat_answer", "")
@@ -668,6 +673,68 @@ def app_css():
             font-size: 22px;
         }
 
+        .login-page {
+            max-width: 620px;
+            margin: 0 auto;
+            padding: 90px 24px 40px;
+        }
+
+        .login-card {
+            background: white;
+            border: 1.5px solid var(--line);
+            border-radius: 38px;
+            padding: 48px;
+            text-align: center;
+            box-shadow: 0 24px 60px rgba(7, 31, 61, .08);
+        }
+
+        .login-logo {
+            width: 92px;
+            height: 92px;
+            border-radius: 50%;
+            background: #0b4f75;
+            color: white;
+            display: grid;
+            place-items: center;
+            font-size: 48px;
+            margin: 0 auto 22px;
+        }
+
+        .login-title {
+            font-size: 46px;
+            line-height: 1.05;
+            font-weight: 950;
+            color: var(--navy);
+            margin-bottom: 10px;
+        }
+
+        .login-subtitle {
+            color: var(--muted);
+            font-size: 23px;
+            line-height: 1.4;
+            margin-bottom: 34px;
+        }
+
+        .login-name-label {
+            color: var(--muted);
+            font-size: 18px;
+            font-weight: 900;
+            letter-spacing: 3px;
+            text-transform: uppercase;
+            text-align: left;
+            margin-bottom: 10px;
+        }
+
+        .login-card .stTextInput input {
+            min-height: 72px;
+            border-radius: 26px;
+            border: 2px solid var(--soft-line);
+            color: var(--navy);
+            font-size: 23px;
+            font-weight: 800;
+            background: #f8fdff;
+        }
+
         .name-box-wrap .stTextInput input {
             border-radius: 28px;
             background: white;
@@ -690,6 +757,131 @@ def app_css():
         """,
         unsafe_allow_html=True,
     )
+
+
+def get_service_account_info():
+    """Read Google service account credentials from Streamlit Secrets."""
+    possible_secret_names = (
+        "gcp_service_account",
+        "google_service_account",
+        "service_account",
+    )
+
+    for secret_name in possible_secret_names:
+        if secret_name in st.secrets:
+            credentials = dict(st.secrets[secret_name])
+            break
+    else:
+        required_keys = {
+            "type",
+            "project_id",
+            "private_key_id",
+            "private_key",
+            "client_email",
+            "client_id",
+            "auth_uri",
+            "token_uri",
+            "auth_provider_x509_cert_url",
+            "client_x509_cert_url",
+        }
+        if required_keys.issubset(set(st.secrets.keys())):
+            credentials = {key: st.secrets[key] for key in required_keys}
+        else:
+            raise ValueError("Google service account credentials were not found in Streamlit Secrets.")
+
+    if "private_key" in credentials:
+        credentials["private_key"] = credentials["private_key"].replace("\\n", "\n")
+    return credentials
+
+
+def append_login_to_sheet(name):
+    """Append the login timestamp and name to Google Sheets."""
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+    except ImportError:
+        return False, "Google Sheets libraries are missing. Please add gspread and google-auth to requirements.txt."
+
+    try:
+        service_account_info = get_service_account_info()
+        credentials = Credentials.from_service_account_info(
+            service_account_info,
+            scopes=GOOGLE_SCOPES,
+        )
+        client = gspread.authorize(credentials)
+        worksheet = client.open_by_key(GOOGLE_SHEET_ID).sheet1
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        worksheet.append_row([timestamp, name], value_input_option="USER_ENTERED")
+        return True, "Login saved."
+    except ValueError as error:
+        return False, str(error)
+    except Exception:
+        return False, "I could not save your login right now. Please check the Google Sheet sharing, credentials, or internet connection."
+
+
+def authenticate_user(name):
+    """Validate the name and save the login record."""
+    cleaned_name = name.strip()
+    if not cleaned_name:
+        return False, "Please enter your name to continue."
+
+    saved, message = append_login_to_sheet(cleaned_name)
+    if not saved:
+        return False, message
+
+    st.session_state["logged_in"] = True
+    st.session_state["user_name"] = cleaned_name
+    st.session_state["screen"] = "language"
+    return True, "Welcome to SkinSense."
+
+
+def logout():
+    """Clear the active session and return to the login page."""
+    st.session_state.clear()
+    st.rerun()
+
+
+def login_page():
+    """Render the first screen users see before entering the app."""
+    st.markdown(
+        """
+        <div class="login-page">
+            <div class="login-card">
+                <div class="login-logo">✋</div>
+                <div class="login-title">Welcome to SkinSense</div>
+                <div class="login-subtitle">
+                    Coastal skin care support for Koli fisherwomen and fishermen.
+                </div>
+                <div class="login-name-label">Enter your name</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    entered_name = st.text_input(
+        "Enter your name",
+        placeholder="Enter your name",
+        label_visibility="collapsed",
+        key="login_name_input",
+    )
+
+    if st.button("Continue", key="login-continue"):
+        success, message = authenticate_user(entered_name)
+        if success:
+            st.success(message)
+            st.rerun()
+        else:
+            st.warning(message)
+
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+
+def authenticated_sidebar():
+    """Show logged-in user details and logout control."""
+    with st.sidebar:
+        st.markdown("### SkinSense")
+        st.write(f"Logged in as **{st.session_state.get('user_name', '')}**")
+        if st.button("Logout"):
+            logout()
 
 
 def topbar():
@@ -731,15 +923,17 @@ def language_page():
         """,
         unsafe_allow_html=True,
     )
-    st.markdown('<div class="page" style="padding-top:0;padding-bottom:0;">', unsafe_allow_html=True)
-    st.markdown('<div class="name-box-wrap"><div class="name-label">Your Name</div>', unsafe_allow_html=True)
-    st.session_state.user_name = st.text_input(
-        "Your Name",
-        value=st.session_state.user_name,
-        placeholder="Type your name here",
-        label_visibility="collapsed",
+    st.markdown(
+        f"""
+        <div class="page" style="padding-top:0;padding-bottom:0;">
+            <div class="name-box-wrap">
+                <div class="name-label">Welcome</div>
+                <div class="continue">{st.session_state.get("user_name", "")}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
-    st.markdown("</div></div>", unsafe_allow_html=True)
     st.markdown(
         """
         <div class="page" style="padding-top:0;">
@@ -1022,6 +1216,12 @@ def chat_answer(question):
 
 init_state()
 app_css()
+
+if not st.session_state.get("logged_in", False):
+    login_page()
+    st.stop()
+
+authenticated_sidebar()
 
 if st.session_state.screen == "language":
     language_page()
