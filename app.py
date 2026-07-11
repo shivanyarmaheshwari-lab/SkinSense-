@@ -1,20 +1,40 @@
+import json
+import logging
+import re
 from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 
 
-st.set_page_config(page_title="SkinSense", layout="wide", initial_sidebar_state="collapsed")
+logger = logging.getLogger(__name__)
+
+st.set_page_config(
+    page_title="SkinSense",
+    page_icon="✋",
+    layout="centered",
+    initial_sidebar_state="expanded",
+)
 
 
-OPTIONS = ["Choose one", "Yes", "No", "I don't know", "Maybe"]
-GOOGLE_SHEET_ID = "1VCwoQWGVI-9y7m9WGlWQlM4nSZ4Hs0F6TqexuuMYbPU"
+# ============================================================
+# CHANGE THESE VALUES IF YOUR FILE NAMES OR SHEET CHANGE
+# ============================================================
+DEFAULT_GOOGLE_SHEET_ID = "1VCwoQWGVI-9y7m9WGlWQlM4nSZ4Hs0F6TqexuuMYbPU"
+QUESTION_BANK_FILE = "skinsense_questions.xlsx"
+MODEL_FILE = "skinsense_model.keras"
+LABELS_FILE = "skinsense_labels.json"
+IMAGE_SIZE = 224
+
+
+ANSWER_OPTIONS = ["Choose one", "Yes", "No", "I don't know", "Maybe"]
 GOOGLE_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 
-DISEASES = {
+DISEASE_INFO = {
     "Irritant Contact Dermatitis": {
         "risk": 72,
-        "level": "Medium",
         "doctor": "Visit a dermatologist soon if it does not improve or keeps coming back.",
         "advice": [
             "Rinse skin with clean water after fishing work.",
@@ -22,19 +42,17 @@ DISEASES = {
             "Use clean dry gloves when handling fish or wet nets.",
         ],
     },
-    "Ringworm": {
-        "risk": 78,
-        "level": "Medium",
-        "doctor": "Visit a dermatologist soon because fungal rashes can spread.",
+    "Occupational Hand Eczema": {
+        "risk": 70,
+        "doctor": "Visit a dermatologist soon if cracking, pain, or repeated flare-ups continue.",
         "advice": [
-            "Keep the rash dry.",
-            "Do not share towels or gloves.",
-            "Avoid scratching the area.",
+            "Avoid long contact with wet gloves when possible.",
+            "Dry hands well after work.",
+            "Use a simple moisturizer if available.",
         ],
     },
     "Athlete's Foot": {
         "risk": 66,
-        "level": "Medium",
         "doctor": "Visit a dermatologist if itching, peeling, or cracks continue.",
         "advice": [
             "Dry between your toes after work.",
@@ -42,9 +60,35 @@ DISEASES = {
             "Keep boots dry when possible.",
         ],
     },
+    "Ringworm": {
+        "risk": 78,
+        "doctor": "Visit a dermatologist soon because fungal rashes can spread.",
+        "advice": [
+            "Keep the rash dry.",
+            "Do not share towels or gloves.",
+            "Avoid scratching the area.",
+        ],
+    },
+    "Cutaneous Candidiasis": {
+        "risk": 70,
+        "doctor": "Visit a dermatologist if redness, itching, or wet skin folds continue.",
+        "advice": [
+            "Keep skin folds dry.",
+            "Change wet clothes quickly.",
+            "Avoid scratching the area.",
+        ],
+    },
+    "Folliculitis": {
+        "risk": 74,
+        "doctor": "Visit a dermatologist if bumps are painful, spreading, or filled with pus.",
+        "advice": [
+            "Keep the area clean.",
+            "Avoid squeezing bumps.",
+            "Use clean clothing and towels.",
+        ],
+    },
     "Cellulitis": {
         "risk": 91,
-        "level": "High",
         "doctor": "Seek medical help immediately, especially with fever, swelling, heat, pus, or severe pain.",
         "advice": [
             "Do not wait if the area is hot, swollen, or very painful.",
@@ -52,9 +96,17 @@ DISEASES = {
             "Avoid squeezing or scratching the skin.",
         ],
     },
+    "Impetigo": {
+        "risk": 78,
+        "doctor": "Visit a dermatologist soon because bacterial skin infections can spread.",
+        "advice": [
+            "Do not scratch sores.",
+            "Wash hands after touching the area.",
+            "Avoid sharing towels.",
+        ],
+    },
     "Sunburn": {
         "risk": 58,
-        "level": "Low",
         "doctor": "Manage at home unless there are blisters, fever, or severe pain.",
         "advice": [
             "Cool the skin with clean water.",
@@ -62,696 +114,110 @@ DISEASES = {
             "Cover skin during strong sun.",
         ],
     },
+    "Actinic Keratosis": {
+        "risk": 76,
+        "doctor": "Visit a dermatologist soon for rough or scaly sun-damaged patches.",
+        "advice": [
+            "Protect skin from strong sun.",
+            "Do not pick rough patches.",
+            "Ask a doctor to check long-lasting spots.",
+        ],
+    },
 }
 
 
-def init_state():
-    st.session_state.setdefault("screen", "language")
-    st.session_state.setdefault("language", "English")
-    st.session_state.setdefault("user_name", "")
-    st.session_state.setdefault("logged_in", False)
-    st.session_state.setdefault("uploaded_name", "")
-    st.session_state.setdefault("prediction", None)
-    st.session_state.setdefault("chat_answer", "")
+FALLBACK_QUESTIONS = {
+    "Irritant Contact Dermatitis": [
+        ("Did it start after working in sea water?", 0.20, 0.0, 0.05, 0.0),
+        ("Does the skin burn or sting?", 0.12, 0.0, 0.04, 0.0),
+        ("Is the skin dry or cracked?", 0.10, 0.0, 0.04, 0.0),
+    ],
+    "Occupational Hand Eczema": [
+        ("Has this been happening again and again on your hands?", 0.18, 0.0, 0.05, 0.0),
+        ("Are your hands dry, cracked, or thickened?", 0.18, 0.0, 0.05, 0.0),
+    ],
+    "Athlete's Foot": [
+        ("Is it between your toes?", 0.25, -0.12, 0.05, 0.0),
+        ("Are your feet often wet inside boots?", 0.18, 0.0, 0.05, 0.0),
+        ("Is there peeling or cracking on your feet?", 0.16, 0.0, 0.05, 0.0),
+    ],
+    "Ringworm": [
+        ("Is the rash circular?", 0.25, -0.12, 0.05, 0.0),
+        ("Is the edge of the rash more red than the center?", 0.15, 0.0, 0.04, 0.0),
+        ("Is it itchy?", 0.12, 0.0, 0.04, 0.0),
+    ],
+    "Cutaneous Candidiasis": [
+        ("Is the area usually wet or sweaty?", 0.18, 0.0, 0.05, 0.0),
+        ("Is it in a skin fold?", 0.20, 0.0, 0.05, 0.0),
+    ],
+    "Folliculitis": [
+        ("Do you see small bumps around hair roots?", 0.20, 0.0, 0.05, 0.0),
+        ("Are the bumps painful or filled with pus?", 0.22, 0.0, 0.06, 0.0),
+    ],
+    "Cellulitis": [
+        ("Is it painful, swollen, or warm?", 0.25, 0.0, 0.08, 0.0),
+        ("Do you see pus, bleeding, or a bad smell?", 0.30, 0.0, 0.10, 0.0),
+        ("Do you have fever?", 0.30, 0.0, 0.10, 0.0),
+    ],
+    "Impetigo": [
+        ("Do you see yellow or honey-colored crust?", 0.25, 0.0, 0.08, 0.0),
+        ("Are there open sores or blisters?", 0.18, 0.0, 0.05, 0.0),
+    ],
+    "Sunburn": [
+        ("Did it start after strong sunlight?", 0.25, 0.0, 0.05, 0.0),
+        ("Does the skin feel hot or burning?", 0.18, 0.0, 0.05, 0.0),
+    ],
+    "Actinic Keratosis": [
+        ("Is the patch rough or scaly?", 0.25, 0.0, 0.08, 0.0),
+        ("Has it been there for many weeks?", 0.18, 0.0, 0.06, 0.0),
+    ],
+}
 
 
-def app_css():
+def apply_branding() -> None:
+    """Small, stable CSS only for typography and simple branding."""
     st.markdown(
         """
         <style>
         :root {
-            --bg: #eef8fb;
-            --navy: #071f3d;
-            --muted: #5c6f8d;
-            --blue: #126fa2;
-            --teal: #0d7f8b;
-            --deep: #00324a;
-            --line: #dbe8f2;
-            --soft-line: #c8dde6;
-            --card: #ffffff;
-            --green: #38a05a;
+            --skinsense-bg: #eef8fb;
+            --skinsense-navy: #071f3d;
+            --skinsense-teal: #0b7f8a;
         }
-
         .stApp {
-            background: var(--bg);
-            color: var(--navy);
+            background: var(--skinsense-bg);
         }
-
-        [data-testid="stHeader"],
-        [data-testid="stToolbar"],
-        [data-testid="stDecoration"],
-        #MainMenu,
-        footer {
-            display: none;
+        h1, h2, h3 {
+            color: var(--skinsense-navy);
         }
-
-        .block-container {
-            max-width: 1500px;
-            padding: 0 0 60px;
-        }
-
-        .topbar {
-            height: 78px;
-            background: #fff;
-            border-bottom: 1px solid var(--line);
-            display: flex;
-            align-items: center;
-            padding: 0 13%;
-            gap: 18px;
-        }
-
-        .mini-logo {
-            width: 58px;
-            height: 58px;
+        .skinsense-logo {
+            width: 5rem;
+            height: 5rem;
             border-radius: 50%;
-            background: #0b4f75;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--skinsense-teal);
             color: white;
-            display: grid;
-            place-items: center;
-            font-size: 30px;
-            font-weight: 900;
+            font-size: 2.4rem;
+            margin-bottom: 0.75rem;
         }
-
-        .top-title {
-            font-size: 25px;
-            line-height: 1.05;
-            font-weight: 900;
-            color: var(--navy);
-        }
-
-        .top-subtitle {
-            color: var(--muted);
-            font-size: 21px;
-            margin-top: 6px;
-        }
-
-        .page {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 72px 24px 30px;
-        }
-
-        .mobile-page {
-            max-width: 640px;
-            margin: 0 auto;
-            padding: 110px 24px 40px;
-        }
-
-        .chat-page {
-            max-width: 760px;
-            margin: 0 auto;
-            padding: 170px 24px 40px;
-            text-align: center;
-        }
-
-        .hero-title {
-            font-size: 76px;
-            line-height: .92;
-            font-weight: 950;
-            letter-spacing: -2px;
-            color: var(--navy);
-            margin: 0 0 26px;
-        }
-
-        .hero-subtitle {
-            font-size: 31px;
-            font-weight: 900;
-            color: var(--blue);
-            margin-bottom: 28px;
-        }
-
-        .name-box-wrap {
-            max-width: 520px;
-            margin: 0 0 58px;
-        }
-
-        .name-label {
-            color: var(--muted);
-            font-size: 18px;
-            font-weight: 900;
-            letter-spacing: 4px;
-            text-transform: uppercase;
-            margin-bottom: 12px;
-        }
-
-        .language-label {
-            font-size: 20px;
-            font-weight: 900;
-            color: var(--muted);
-            letter-spacing: 6px;
-            text-transform: uppercase;
-            margin-bottom: 28px;
-        }
-
-        .language-card {
-            height: 175px;
-            border: 1.5px solid var(--line);
-            border-radius: 28px;
-            background: white;
-            padding: 30px;
-            box-shadow: 0 12px 30px rgba(7, 31, 61, .05);
-            margin-bottom: 14px;
-        }
-
-        .language-card .eyebrow {
-            color: var(--muted);
-            letter-spacing: 6px;
-            font-size: 18px;
-            font-weight: 900;
-            text-transform: uppercase;
-            margin-bottom: 12px;
-        }
-
-        .language-card .big {
-            color: var(--navy);
-            font-size: 45px;
-            line-height: 1.05;
-            font-weight: 950;
-            margin-bottom: 20px;
-        }
-
-        .continue {
-            color: var(--blue);
-            font-size: 19px;
-            font-weight: 800;
-        }
-
-        .disclaimer {
-            color: var(--muted);
-            font-size: 19px;
+        .muted-copy {
+            color: #4f6678;
+            font-size: 1.08rem;
             line-height: 1.45;
-            max-width: 760px;
-            margin-top: 58px;
         }
-
-        .app-header {
-            position: fixed;
-            top: 22px;
-            left: 28px;
-            right: 28px;
-            display: flex;
-            align-items: center;
-            gap: 16px;
-            z-index: 1;
+        .small-label {
+            color: #4f6678;
+            font-size: 0.82rem;
+            font-weight: 700;
+            letter-spacing: 0.12rem;
+            text-transform: uppercase;
         }
-
-        .back-circle {
-            width: 56px;
-            height: 56px;
-            border-radius: 50%;
-            background: white;
-            display: grid;
-            place-items: center;
-            color: var(--navy);
-            font-size: 36px;
+        .result-name {
+            font-size: 1.8rem;
             font-weight: 800;
-        }
-
-        .brand-row-logo {
-            color: #0b8d86;
-            font-size: 35px;
-            line-height: 1;
-        }
-
-        .brand-row-title {
-            font-size: 28px;
-            font-weight: 950;
-            color: var(--navy);
-        }
-
-        .screen-title {
-            color: var(--navy);
-            font-size: 41px;
-            line-height: 1.1;
-            font-weight: 950;
-            text-align: center;
-            margin-bottom: 34px;
-        }
-
-        .screen-title.left {
-            text-align: left;
-            margin-bottom: 10px;
-        }
-
-        .screen-help {
-            color: #486174;
-            font-size: 23px;
-            line-height: 1.35;
-            margin-bottom: 46px;
-        }
-
-        .action-card {
-            border: 0;
-            border-radius: 38px;
-            min-height: 300px;
-            padding: 52px 42px;
-            text-align: center;
-            box-shadow: 0 28px 55px rgba(7, 31, 61, .09);
-            margin-bottom: 32px;
-        }
-
-        .action-card.primary {
-            background: linear-gradient(140deg, #002b45 0%, #0a8791 100%);
-            color: white;
-        }
-
-        .action-card.secondary {
-            background: white;
-            color: var(--navy);
-        }
-
-        .card-icon {
-            width: 110px;
-            height: 110px;
-            border-radius: 50%;
-            margin: 0 auto 26px;
-            display: grid;
-            place-items: center;
-            font-size: 58px;
-            font-weight: 900;
-        }
-
-        .primary .card-icon {
-            background: rgba(255,255,255,.22);
-            color: white;
-        }
-
-        .secondary .card-icon {
-            background: #cff6ff;
-            color: var(--navy);
-        }
-
-        .action-title {
-            font-size: 33px;
-            font-weight: 950;
-            margin-bottom: 18px;
-        }
-
-        .action-copy {
-            font-size: 23px;
-            line-height: 1.35;
-            color: rgba(255,255,255,.86);
-        }
-
-        .secondary .action-copy {
-            color: #486174;
-        }
-
-        .upload-option {
-            border-radius: 38px;
-            min-height: 230px;
-            display: grid;
-            place-items: center;
-            text-align: center;
-            padding: 30px;
-            margin-bottom: 24px;
-            box-shadow: 0 28px 55px rgba(7, 31, 61, .09);
-        }
-
-        .upload-option.primary {
-            background: linear-gradient(140deg, #002b45 0%, #0a8791 100%);
-            color: white;
-        }
-
-        .upload-option.secondary {
-            background: white;
-            color: var(--navy);
-        }
-
-        .upload-icon {
-            font-size: 55px;
-            margin-bottom: 18px;
-            line-height: 1;
-        }
-
-        .upload-label {
-            font-size: 29px;
-            font-weight: 950;
-        }
-
-        .preview-frame {
-            border-radius: 36px;
-            overflow: hidden;
-            background: white;
-            box-shadow: 0 20px 50px rgba(7, 31, 61, .10);
-            margin-bottom: 26px;
-        }
-
-        .question-wrap {
-            max-width: 620px;
-            margin: 0 auto;
-            padding: 70px 0 20px;
-        }
-
-        .question-title {
-            font-size: 37px;
-            font-weight: 950;
-            color: var(--navy);
-            margin-bottom: 16px;
-        }
-
-        .question-subtitle {
-            color: #486174;
-            font-size: 21px;
-            margin-bottom: 78px;
-        }
-
-        .q-block {
-            border-bottom: 1.5px solid var(--soft-line);
-            padding: 0 0 34px;
-            margin-bottom: 40px;
-        }
-
-        .q-text {
-            color: var(--navy);
-            font-size: 25px;
-            line-height: 1.35;
-            font-weight: 950;
-            margin-bottom: 28px;
-        }
-
-        .answer-label {
-            color: #486174;
-            font-size: 20px;
-            font-weight: 900;
-            letter-spacing: 2px;
-            text-transform: uppercase;
-            margin-bottom: 58px;
-        }
-
-        .result-wrap {
-            max-width: 620px;
-            margin: 0 auto;
-            padding: 28px 0 40px;
-        }
-
-        .result-kicker {
-            text-align: center;
-            color: #486174;
-            font-size: 20px;
-            font-weight: 900;
-            letter-spacing: 4px;
-            text-transform: uppercase;
-            margin-bottom: 34px;
-        }
-
-        .condition-card {
-            background: linear-gradient(145deg, #14364f 0%, #031a32 100%);
-            color: white;
-            border-radius: 38px;
-            padding: 42px;
-            margin-bottom: 30px;
-        }
-
-        .condition-label {
-            color: rgba(255,255,255,.78);
-            font-size: 18px;
-            letter-spacing: 3px;
-            text-transform: uppercase;
-            font-weight: 900;
-            margin-bottom: 16px;
-        }
-
-        .condition-title {
-            font-size: 39px;
-            line-height: 1.18;
-            font-weight: 950;
-            margin-bottom: 24px;
-        }
-
-        .condition-copy {
-            font-size: 23px;
-            line-height: 1.45;
-            color: rgba(255,255,255,.93);
-        }
-
-        .risk-card,
-        .todo-card {
-            background: white;
-            border-radius: 38px;
-            padding: 36px;
-            box-shadow: 0 20px 45px rgba(7, 31, 61, .06);
-            margin-bottom: 30px;
-        }
-
-        .risk-row {
-            display: flex;
-            align-items: center;
-            gap: 18px;
-            margin: 20px 0 26px;
-        }
-
-        .risk-pill {
-            border-radius: 28px;
-            background: var(--green);
-            color: white;
-            padding: 14px 28px;
-            font-size: 25px;
-            font-weight: 950;
-        }
-
-        .risk-percent {
-            color: var(--navy);
-            font-size: 36px;
-            font-weight: 950;
-        }
-
-        .risk-bar {
-            height: 16px;
-            border-radius: 999px;
-            background: #c9f5ff;
-            overflow: hidden;
-            margin-bottom: 14px;
-        }
-
-        .risk-fill {
-            height: 100%;
-            border-radius: 999px;
-            background: var(--green);
-        }
-
-        .doctor-card {
-            background: var(--green);
-            color: white;
-            border-radius: 38px;
-            padding: 34px 38px;
-            display: flex;
-            gap: 22px;
-            align-items: flex-start;
-            margin-bottom: 30px;
-        }
-
-        .check-icon {
-            width: 34px;
-            height: 34px;
-            border: 3px solid white;
-            border-radius: 50%;
-            display: grid;
-            place-items: center;
-            flex: 0 0 auto;
-            font-weight: 900;
-        }
-
-        .doctor-title,
-        .todo-title {
-            font-size: 20px;
-            letter-spacing: 2px;
-            text-transform: uppercase;
-            font-weight: 950;
-            margin-bottom: 12px;
-        }
-
-        .doctor-copy {
-            font-size: 26px;
-            line-height: 1.48;
-            font-weight: 900;
-        }
-
-        .todo-title {
-            color: #486174;
-        }
-
-        .todo-item {
-            display: flex;
-            gap: 16px;
-            color: var(--navy);
-            font-size: 24px;
-            line-height: 1.35;
-            margin: 18px 0;
-        }
-
-        .green-check {
-            color: var(--green);
-            font-weight: 950;
-        }
-
-        .note {
-            text-align: center;
-            color: #486174;
-            font-size: 20px;
-            line-height: 1.35;
-            margin-bottom: 28px;
-        }
-
-        .chat-logo {
-            color: #0b8d86;
-            font-size: 84px;
-            line-height: 1;
-            margin-bottom: 54px;
-        }
-
-        .chat-heading {
-            color: var(--navy);
-            font-size: 29px;
-            line-height: 1.35;
-            font-weight: 900;
-            max-width: 760px;
-            margin: 0 auto 42px;
-        }
-
-        .prompt-card {
-            background: white;
-            border-radius: 34px;
-            padding: 28px;
-            color: var(--navy);
-            font-size: 25px;
-            font-weight: 900;
-            margin: 18px auto;
-            box-shadow: 0 20px 45px rgba(7, 31, 61, .05);
-            max-width: 700px;
-        }
-
-        .chat-input-space {
-            margin-top: 250px;
-        }
-
-        div.stButton > button {
-            min-height: 62px;
-            border-radius: 999px;
-            border: 0;
-            background: linear-gradient(140deg, #00324a 0%, #0a8791 100%);
-            color: white;
-            font-size: 25px;
-            font-weight: 950;
-            box-shadow: 0 18px 35px rgba(7, 31, 61, .08);
-        }
-
-        div.stButton > button:hover {
-            color: white;
-            border: 0;
-            filter: brightness(.98);
-        }
-
-        div[data-testid="stFileUploader"] {
-            background: white;
-            border-radius: 28px;
-            padding: 24px;
-            border: 1.5px dashed var(--soft-line);
-            margin-bottom: 24px;
-        }
-
-        div[data-baseweb="select"] > div {
-            min-height: 62px;
-            border-radius: 28px;
-            border: 3px solid var(--soft-line);
-            background: transparent;
-            color: var(--navy);
-            font-size: 22px;
-            font-weight: 900;
-        }
-
-        label {
-            color: var(--navy) !important;
-            font-size: 18px !important;
-            font-weight: 900 !important;
-        }
-
-        .stTextInput input {
-            min-height: 74px;
-            border-radius: 18px;
-            border: 2px solid var(--soft-line);
-            font-size: 22px;
-        }
-
-        .login-page {
-            max-width: 620px;
-            margin: 0 auto;
-            padding: 90px 24px 40px;
-        }
-
-        .login-card {
-            background: white;
-            border: 1.5px solid var(--line);
-            border-radius: 38px;
-            padding: 48px;
-            text-align: center;
-            box-shadow: 0 24px 60px rgba(7, 31, 61, .08);
-        }
-
-        .login-logo {
-            width: 92px;
-            height: 92px;
-            border-radius: 50%;
-            background: #0b4f75;
-            color: white;
-            display: grid;
-            place-items: center;
-            font-size: 48px;
-            margin: 0 auto 22px;
-        }
-
-        .login-title {
-            font-size: 46px;
-            line-height: 1.05;
-            font-weight: 950;
-            color: var(--navy);
-            margin-bottom: 10px;
-        }
-
-        .login-subtitle {
-            color: var(--muted);
-            font-size: 23px;
-            line-height: 1.4;
-            margin-bottom: 34px;
-        }
-
-        .login-name-label {
-            color: var(--muted);
-            font-size: 18px;
-            font-weight: 900;
-            letter-spacing: 3px;
-            text-transform: uppercase;
-            text-align: left;
-            margin-bottom: 10px;
-        }
-
-        .login-card .stTextInput input {
-            min-height: 72px;
-            border-radius: 26px;
-            border: 2px solid var(--soft-line);
-            color: var(--navy);
-            font-size: 23px;
-            font-weight: 800;
-            background: #f8fdff;
-        }
-
-        .name-box-wrap .stTextInput input {
-            border-radius: 28px;
-            background: white;
-            border: 2px solid var(--line);
-            box-shadow: 0 12px 30px rgba(7, 31, 61, .05);
-            color: var(--navy);
-            font-size: 22px;
-            font-weight: 800;
-        }
-
-        @media (max-width: 900px) {
-            .topbar { padding: 0 24px; }
-            .hero-title { font-size: 54px; }
-            .hero-subtitle { font-size: 25px; margin-bottom: 54px; }
-            .language-card { height: auto; }
-            .mobile-page { padding-top: 95px; }
-            .chat-page { padding-top: 130px; }
+            color: var(--skinsense-navy);
         }
         </style>
         """,
@@ -759,479 +225,585 @@ def app_css():
     )
 
 
-def get_service_account_info():
-    """Read Google service account credentials from Streamlit Secrets."""
-    possible_secret_names = (
-        "gcp_service_account",
-        "google_service_account",
-        "service_account",
-    )
-
-    for secret_name in possible_secret_names:
-        if secret_name in st.secrets:
-            credentials = dict(st.secrets[secret_name])
-            break
-    else:
-        required_keys = {
-            "type",
-            "project_id",
-            "private_key_id",
-            "private_key",
-            "client_email",
-            "client_id",
-            "auth_uri",
-            "token_uri",
-            "auth_provider_x509_cert_url",
-            "client_x509_cert_url",
-        }
-        if required_keys.issubset(set(st.secrets.keys())):
-            credentials = {key: st.secrets[key] for key in required_keys}
-        else:
-            raise ValueError("Google service account credentials were not found in Streamlit Secrets.")
-
-    if "private_key" in credentials:
-        credentials["private_key"] = credentials["private_key"].replace("\\n", "\n")
-    return credentials
+def init_state() -> None:
+    """Create all session keys used by the app."""
+    defaults = {
+        "logged_in": False,
+        "user_name": "",
+        "screen": "language",
+        "language": "English",
+        "uploaded_name": "",
+        "top_3_predictions": None,
+        "question_rows": [],
+        "prediction": None,
+        "chat_history": [],
+        "login_tracking_attempted": False,
+        "login_tracking_saved": False,
+        "login_tracking_warning": "",
+        "login_tracking_warning_shown": False,
+    }
+    for key, value in defaults.items():
+        st.session_state.setdefault(key, value)
 
 
-def append_login_to_sheet(name):
-    """Append the login timestamp and name to Google Sheets."""
+def clean_name(value: str) -> str:
+    """Trim, remove control characters, and validate a simple display name."""
+    cleaned = re.sub(r"[\x00-\x1f\x7f]", "", str(value or "")).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned
+
+
+def normalize_private_key(value: str) -> str:
+    """Normalize PEM newlines without changing Base64 content."""
+    key = str(value or "").strip()
+    key = key.replace("\\n", "\n").replace("\r\n", "\n").replace("\r", "\n")
+
+    begin = "-----BEGIN PRIVATE KEY-----"
+    end = "-----END PRIVATE KEY-----"
+    if begin not in key or end not in key:
+        raise ValueError("The Google service-account private key is malformed or incomplete.")
+
+    start = key.index(begin)
+    finish = key.index(end) + len(end)
+    key = key[start:finish]
+
+    lines = [line.strip() for line in key.split("\n") if line.strip()]
+    normalized = "\n".join(lines) + "\n"
+    if not normalized.startswith(begin) or not normalized.rstrip().endswith(end):
+        raise ValueError("The Google service-account private key is malformed or incomplete.")
+    return normalized
+
+
+def get_credentials_section() -> dict:
+    """Read one supported service-account section from Streamlit Secrets."""
+    section_names = ("gcp_service_account", "google_service_account", "service_account")
+    for section_name in section_names:
+        if section_name in st.secrets:
+            return dict(st.secrets[section_name])
+    raise KeyError("Missing Google service-account credentials in Streamlit Secrets.")
+
+
+def build_google_config() -> tuple[str, str, dict]:
+    """Validate Google Sheet settings and credentials without logging secrets."""
+    sheet_id = st.secrets.get("google_sheet_id", DEFAULT_GOOGLE_SHEET_ID)
+    worksheet_name = st.secrets.get("worksheet_name", "Sheet1")
+    credentials_info = get_credentials_section()
+
+    required_fields = ("type", "project_id", "private_key", "client_email", "token_uri")
+    missing_fields = [field for field in required_fields if not credentials_info.get(field)]
+    if not sheet_id:
+        missing_fields.append("google_sheet_id")
+    if missing_fields:
+        raise ValueError("Missing required Google configuration values.")
+
+    credentials_info["private_key"] = normalize_private_key(credentials_info["private_key"])
+    return str(sheet_id).strip(), str(worksheet_name).strip() or "Sheet1", credentials_info
+
+
+def append_login_to_sheet(name: str) -> bool:
+    """Append one login row. Exceptions are logged but never shown raw to users."""
     try:
         import gspread
         from google.oauth2.service_account import Credentials
-    except ImportError:
-        return False, "Google Sheets libraries are missing. Please add gspread and google-auth to requirements.txt."
+    except Exception:
+        logger.exception("Google Sheets login tracking failed: missing Google packages")
+        return False
 
     try:
-        service_account_info = get_service_account_info()
+        sheet_id, worksheet_name, credentials_info = build_google_config()
         credentials = Credentials.from_service_account_info(
-            service_account_info,
+            credentials_info,
             scopes=GOOGLE_SCOPES,
         )
         client = gspread.authorize(credentials)
-        worksheet = client.open_by_key(GOOGLE_SHEET_ID).sheet1
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        worksheet.append_row([timestamp, name], value_input_option="USER_ENTERED")
-        return True, "Login saved."
-    except ValueError as error:
-        return False, str(error)
+        spreadsheet = client.open_by_key(sheet_id)
+        worksheet = spreadsheet.worksheet(worksheet_name)
+        timestamp = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat(timespec="seconds")
+        worksheet.append_row([timestamp, name], value_input_option="RAW")
+        return True
+    except KeyError:
+        logger.exception("Google Sheets login tracking failed: missing Streamlit secrets")
+    except ValueError:
+        logger.exception("Google Sheets login tracking failed: malformed TOML values or private key")
+    except gspread.exceptions.SpreadsheetNotFound:
+        logger.exception("Google Sheets login tracking failed: incorrect spreadsheet ID or sheet not shared")
+    except gspread.exceptions.WorksheetNotFound:
+        logger.exception("Google Sheets login tracking failed: missing worksheet")
+    except gspread.exceptions.APIError:
+        logger.exception("Google Sheets login tracking failed: Google API or permission error")
     except Exception:
-        return False, "I could not save your login right now. Please check the Google Sheet sharing, credentials, or internet connection."
+        logger.exception("Google Sheets login tracking failed")
+    return False
 
 
-def authenticate_user(name):
-    """Validate the name and save the login record."""
-    cleaned_name = name.strip()
+def complete_name_entry(name: str) -> tuple[bool, str]:
+    """Validate the user's name and enter the app even if tracking fails."""
+    cleaned_name = clean_name(name)
     if not cleaned_name:
         return False, "Please enter your name to continue."
-
-    saved, message = append_login_to_sheet(cleaned_name)
-    if not saved:
-        return False, message
+    if len(cleaned_name) > 80:
+        return False, "Please use a shorter name, up to 80 characters."
 
     st.session_state["logged_in"] = True
     st.session_state["user_name"] = cleaned_name
     st.session_state["screen"] = "language"
+
+    if not st.session_state.get("login_tracking_attempted"):
+        st.session_state["login_tracking_attempted"] = True
+        saved = append_login_to_sheet(cleaned_name)
+        st.session_state["login_tracking_saved"] = saved
+        if not saved:
+            st.session_state["login_tracking_warning"] = (
+                "You are signed in, but usage tracking could not be saved."
+            )
+
     return True, "Welcome to SkinSense."
 
 
-def logout():
-    """Clear the active session and return to the login page."""
+def logout() -> None:
+    """Clear the session and return to the name-entry screen."""
     st.session_state.clear()
     st.rerun()
 
 
-def login_page():
-    """Render the first screen users see before entering the app."""
-    st.markdown(
-        """
-        <div class="login-page">
-            <div class="login-card">
-                <div class="login-logo">✋</div>
-                <div class="login-title">Welcome to SkinSense</div>
-                <div class="login-subtitle">
-                    Coastal skin care support for Koli fisherwomen and fishermen.
-                </div>
-                <div class="login-name-label">Enter your name</div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    entered_name = st.text_input(
-        "Enter your name",
-        placeholder="Enter your name",
-        label_visibility="collapsed",
-        key="login_name_input",
-    )
-
-    if st.button("Continue", key="login-continue"):
-        success, message = authenticate_user(entered_name)
-        if success:
-            st.success(message)
-            st.rerun()
-        else:
-            st.warning(message)
-
-    st.markdown("</div></div>", unsafe_allow_html=True)
-
-
-def authenticated_sidebar():
-    """Show logged-in user details and logout control."""
+def render_sidebar() -> None:
+    """Sidebar controls shown after the user enters the app."""
     with st.sidebar:
-        st.markdown("### SkinSense")
-        st.write(f"Logged in as **{st.session_state.get('user_name', '')}**")
-        if st.button("Logout"):
+        st.subheader("SkinSense")
+        st.write(f"Name: **{st.session_state.get('user_name', '')}**")
+        st.divider()
+        if st.button("Home", use_container_width=True):
+            st.session_state["screen"] = "language"
+            st.rerun()
+        if st.button("Logout", use_container_width=True):
             logout()
 
 
-def topbar():
-    st.markdown(
-        """
-        <div class="topbar">
-            <div class="mini-logo">✋</div>
-            <div>
-                <div class="top-title">SkinSense</div>
-                <div class="top-subtitle">Coastal Skin Care Workspace</div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def app_header(title="SkinSense", back_target="menu"):
-    st.markdown(
-        f"""
-        <div class="app-header">
-            <div class="back-circle">←</div>
-            <div class="brand-row-logo">✋</div>
-            <div class="brand-row-title">{title}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def language_page():
-    topbar()
-    st.markdown(
-        """
-        <div class="page">
-            <div class="hero-title">SkinSense</div>
-            <div class="hero-subtitle">AI Skin Screening for Fishing Communities</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        f"""
-        <div class="page" style="padding-top:0;padding-bottom:0;">
-            <div class="name-box-wrap">
-                <div class="name-label">Welcome</div>
-                <div class="continue">{st.session_state.get("user_name", "")}</div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        """
-        <div class="page" style="padding-top:0;">
-            <div class="language-label">भाषा निवडा · भाषा चुनें · Choose your language</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    cols = st.columns(3)
-    languages = [
-        ("Marathi", "MARATHI", "मराठी"),
-        ("Hindi", "HINDI", "हिंदी"),
-        ("English", "ENGLISH", "English"),
-    ]
-    for col, (key, eyebrow, big) in zip(cols, languages):
-        with col:
+def login_page() -> None:
+    """Simple name entry. This is not OAuth or secure authentication."""
+    left, center, right = st.columns([1, 1.4, 1])
+    with center:
+        with st.container(border=True):
+            st.markdown('<div class="skinsense-logo">✋</div>', unsafe_allow_html=True)
+            st.title("Welcome to SkinSense")
             st.markdown(
-                f"""
-                <div class="language-card">
-                    <div class="eyebrow">{eyebrow}</div>
-                    <div class="big">{big}</div>
-                    <div class="continue">Continue →</div>
-                </div>
-                """,
+                '<p class="muted-copy">Coastal skin care support for Koli fisherwomen and fishermen.</p>',
                 unsafe_allow_html=True,
             )
-            if st.button(f"Continue {key}", key=f"language-{key}"):
-                st.session_state.language = key
-                st.session_state.screen = "menu"
-                st.rerun()
-    st.markdown(
-        """
-        <div class="page" style="padding-top:20px;">
-            <div class="disclaimer">
-                SkinSense is a screening aid, not a medical diagnosis. For serious or worsening symptoms, please<br>
-                visit a dermatologist.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+            with st.form("name_entry_form", clear_on_submit=False):
+                name = st.text_input("Enter your name", max_chars=80)
+                submitted = st.form_submit_button("Continue", use_container_width=True)
+            if submitted:
+                success, message = complete_name_entry(name)
+                if success:
+                    st.success(message)
+                    st.rerun()
+                else:
+                    st.warning(message)
 
 
-def menu_page():
-    app_header("SkinSense", "language")
-    st.markdown('<div class="mobile-page">', unsafe_allow_html=True)
-    st.markdown('<div class="screen-title">What would you like to do?</div>', unsafe_allow_html=True)
-    st.markdown(
-        """
-        <div class="action-card primary">
-            <div class="card-icon">📷</div>
-            <div class="action-title">Check my skin</div>
-            <div class="action-copy">Take a photo of the skin problem and get a quick check</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    if st.button("Check my skin", key="go-check"):
-        st.session_state.screen = "upload"
-        st.rerun()
-    st.markdown(
-        """
-        <div class="action-card secondary">
-            <div class="card-icon">?</div>
-            <div class="action-title">Ask a question</div>
-            <div class="action-copy">Chat and ask simple questions about skin care</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    if st.button("Ask a question", key="go-chat"):
-        st.session_state.screen = "chat"
-        st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
+def show_tracking_warning_once() -> None:
+    """Show non-blocking tracking warning once after successful name entry."""
+    warning = st.session_state.get("login_tracking_warning")
+    shown = st.session_state.get("login_tracking_warning_shown")
+    if warning and not shown:
+        st.warning(warning)
+        st.session_state["login_tracking_warning_shown"] = True
 
 
-def upload_page():
-    app_header("SkinSense", "menu")
-    st.markdown('<div class="mobile-page">', unsafe_allow_html=True)
-    st.markdown(
-        """
-        <div class="screen-title left">Show us the skin problem</div>
-        <div class="screen-help">Take a clear photo in good light, close to the skin</div>
-        <div class="upload-option primary">
-            <div>
-                <div class="upload-icon">📷</div>
-                <div class="upload-label">Take a photo</div>
-            </div>
-        </div>
-        <div class="upload-option secondary">
-            <div>
-                <div class="upload-icon">▧</div>
-                <div class="upload-label">Choose from gallery</div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    image = st.file_uploader("Choose from gallery", type=["jpg", "jpeg", "png"], label_visibility="collapsed")
-    if image:
-        st.session_state.uploaded_name = image.name
-        st.markdown('<div class="preview-frame">', unsafe_allow_html=True)
-        st.image(image, use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-        if st.button("Continue →", key="continue-after-upload"):
-            st.session_state.screen = "questions"
-            st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
+@st.cache_resource
+def load_skin_model():
+    """Load the optional image model and labels."""
+    model_path = Path(MODEL_FILE)
+    labels_path = Path(LABELS_FILE)
+    if not model_path.exists() or not labels_path.exists():
+        return None, None, "Model files are not uploaded yet, so demo predictions are being used."
+
+    try:
+        import tensorflow as tf
+    except Exception:
+        logger.exception("Skin model loading failed: missing TensorFlow")
+        return None, None, "TensorFlow is not installed, so demo predictions are being used."
+
+    try:
+        model = tf.keras.models.load_model(model_path)
+        with labels_path.open("r", encoding="utf-8") as file:
+            labels = json.load(file)
+        return model, labels, None
+    except Exception:
+        logger.exception("Skin model loading failed")
+        return None, None, "The model could not be loaded, so demo predictions are being used."
 
 
-def questions_page():
-    app_header("SkinSense", "upload")
-    st.markdown('<div class="question-wrap">', unsafe_allow_html=True)
-    st.markdown(
-        """
-        <div class="question-title">A few simple questions</div>
-        <div class="question-subtitle">Write a short answer and pick one option for each question.</div>
-        """,
-        unsafe_allow_html=True,
-    )
-    questions = [
-        "Q1. Does the skin problem itch, burn or hurt?",
-        "Q2. Is it spreading or getting bigger?",
-        "Q3. Are your hands or feet in sea water for many hours every day?",
-        "Q4. Have you had this problem for more than 2 weeks?",
-        "Q5. Do you see pus, bleeding, or a bad smell?",
+def demo_top_three() -> list[dict]:
+    """Fallback top-3 predictions while the trained model is not uploaded."""
+    return [
+        {"disease": "Irritant Contact Dermatitis", "score": 0.62},
+        {"disease": "Ringworm", "score": 0.48},
+        {"disease": "Athlete's Foot", "score": 0.35},
     ]
-    answers = {}
-    for i, question in enumerate(questions, 1):
-        st.markdown(
-            f"""
-            <div class="q-block">
-                <div class="q-text">{question}</div>
-                <div class="answer-label">Your answer</div>
-            """,
-            unsafe_allow_html=True,
+
+
+def predict_top_three_from_image(uploaded_file) -> tuple[list[dict], str | None]:
+    """Return top-3 model predictions for an uploaded image."""
+    model, labels, warning = load_skin_model()
+    if warning:
+        return demo_top_three(), warning
+
+    try:
+        import numpy as np
+        from PIL import Image
+    except Exception:
+        logger.exception("Image prediction failed: missing image packages")
+        return demo_top_three(), "Image packages are missing, so demo predictions are being used."
+
+    try:
+        uploaded_file.seek(0)
+        image = Image.open(uploaded_file).convert("RGB")
+        image = image.resize((IMAGE_SIZE, IMAGE_SIZE))
+        image_array = np.array(image)
+        image_array = np.expand_dims(image_array, axis=0)
+        predictions = model.predict(image_array, verbose=0)[0]
+        top_indices = np.argsort(predictions)[-3:][::-1]
+        top_three = [
+            {"disease": labels[int(index)], "score": float(predictions[int(index)])}
+            for index in top_indices
+        ]
+        return top_three, None
+    except Exception:
+        logger.exception("Image prediction failed")
+        return demo_top_three(), "The image could not be analyzed, so demo predictions are being used."
+
+
+@st.cache_data
+def load_question_bank(question_bank_file: str):
+    """Load disease-specific question rows from Excel."""
+    try:
+        import pandas as pd
+    except Exception:
+        logger.exception("Question bank loading failed: missing pandas/openpyxl")
+        return None, "Question bank needs pandas and openpyxl in requirements.txt."
+
+    try:
+        is_url = str(question_bank_file).startswith(("http://", "https://"))
+        if not is_url and not Path(question_bank_file).exists():
+            return None, "Excel question bank was not found. Default questions are being used."
+
+        df = pd.read_excel(question_bank_file)
+        df.columns = (
+            df.columns.astype(str).str.strip().str.lower().str.replace(" ", "_")
         )
-        answers[question] = st.selectbox("Choose one", OPTIONS, key=f"q-{i}", label_visibility="collapsed")
-        st.markdown("</div>", unsafe_allow_html=True)
-    if st.button("See result →", key="see-result"):
-        st.session_state.prediction = predict(answers)
-        st.session_state.screen = "result"
-        st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
+        required_columns = {"disease", "question"}
+        missing_columns = required_columns - set(df.columns)
+        if missing_columns:
+            return None, "Excel question bank is missing disease or question columns."
+
+        for column in ("yes_boost", "no_boost", "maybe_boost", "dont_know_boost"):
+            if column not in df.columns:
+                df[column] = 0.0
+            df[column] = pd.to_numeric(df[column], errors="coerce").fillna(0.0)
+
+        df["disease"] = df["disease"].astype(str).str.strip()
+        df["question"] = df["question"].astype(str).str.strip()
+        df = df[(df["disease"] != "") & (df["question"] != "")]
+        return df, None
+    except Exception:
+        logger.exception("Question bank loading failed")
+        return None, "Excel question bank could not be read. Default questions are being used."
 
 
-def predict(answers):
-    yes = {key: value == "Yes" for key, value in answers.items()}
-    if yes["Q5. Do you see pus, bleeding, or a bad smell?"] and yes["Q1. Does the skin problem itch, burn or hurt?"]:
-        name = "Cellulitis"
-    elif yes["Q2. Is it spreading or getting bigger?"]:
-        name = "Ringworm"
-    elif yes["Q3. Are your hands or feet in sea water for many hours every day?"]:
-        name = "Irritant Contact Dermatitis"
-    elif yes["Q4. Have you had this problem for more than 2 weeks?"]:
-        name = "Athlete's Foot"
-    else:
-        name = "Sunburn"
-
-    result = DISEASES[name].copy()
-    result["name"] = name
-    maybe_count = sum(value == "Maybe" for value in answers.values())
-    yes_count = sum(yes.values())
-    result["risk"] = min(result["risk"] + yes_count * 2 + maybe_count, 96)
-    if result["risk"] >= 80:
-        result["level"] = "High"
-    elif result["risk"] >= 60:
-        result["level"] = "Medium"
-    else:
-        result["level"] = "Low"
-    return result
+def fallback_question_rows(top_three: list[dict]) -> list[dict]:
+    """Return up to five built-in question rows for the current top three diseases."""
+    rows = []
+    for item in top_three:
+        disease = item["disease"]
+        for question, yes_boost, no_boost, maybe_boost, dont_know_boost in FALLBACK_QUESTIONS.get(disease, []):
+            rows.append(
+                {
+                    "disease": disease,
+                    "question": question,
+                    "yes_boost": yes_boost,
+                    "no_boost": no_boost,
+                    "maybe_boost": maybe_boost,
+                    "dont_know_boost": dont_know_boost,
+                }
+            )
+    return rows[:5]
 
 
-def result_page():
-    app_header("SkinSense", "questions")
-    prediction = st.session_state.prediction or {
-        "name": "I could not see a skin problem in this photo.",
-        "risk": 0,
-        "level": "Low",
-        "doctor": "Only if you have a skin concern and can take a clear photo of it.",
-        "advice": [
-            "Please take a clear, close-up photo of the affected skin area.",
-            "Make sure there is plenty of light when you take the photo.",
-            "Keep the skin area clean and dry until you can show it to a doctor.",
-        ],
-    }
-    fill = max(prediction["risk"], 4)
-    st.markdown('<div class="result-wrap">', unsafe_allow_html=True)
-    st.markdown('<div class="result-kicker">Your Result</div>', unsafe_allow_html=True)
-    st.markdown(
-        f"""
-        <div class="condition-card">
-            <div class="condition-label">Possible Condition</div>
-            <div class="condition-title">{prediction["name"]}</div>
-            <div class="condition-copy">This is an early screening result based on the photo and your answers.</div>
-        </div>
-        <div class="risk-card">
-            <div class="condition-label" style="color:#486174;">Risk Level</div>
-            <div class="risk-row">
-                <div class="risk-pill">{prediction["level"]}</div>
-                <div class="risk-percent">{prediction["risk"]}%</div>
-            </div>
-            <div class="risk-bar"><div class="risk-fill" style="width:{fill}%;"></div></div>
-            <div class="condition-label" style="color:#486174;">Risk Score</div>
-        </div>
-        <div class="doctor-card">
-            <div class="check-icon">✓</div>
-            <div>
-                <div class="doctor-title">When to see a dermatologist</div>
-                <div class="doctor-copy">{prediction["doctor"]}</div>
-            </div>
-        </div>
-        <div class="todo-card">
-            <div class="todo-title">What you can do</div>
-        """,
-        unsafe_allow_html=True,
+def choose_question_rows(top_three: list[dict]) -> tuple[list[dict], str | None]:
+    """Choose five questions from Excel based on the top three model diseases."""
+    top_diseases = [item["disease"] for item in top_three]
+    question_bank, warning = load_question_bank(QUESTION_BANK_FILE)
+    if question_bank is None:
+        return fallback_question_rows(top_three), warning
+
+    filtered = question_bank[question_bank["disease"].isin(top_diseases)].copy()
+    if filtered.empty:
+        return fallback_question_rows(top_three), "No Excel questions matched the top three diseases."
+
+    disease_order = {disease: index for index, disease in enumerate(top_diseases)}
+    filtered["disease_order"] = filtered["disease"].map(disease_order)
+    filtered = filtered.sort_values(["disease_order"]).drop_duplicates("question")
+    rows = filtered.head(5).to_dict("records")
+    if len(rows) < 5:
+        fallback = fallback_question_rows(top_three)
+        seen = {row["question"] for row in rows}
+        for row in fallback:
+            if row["question"] not in seen:
+                rows.append(row)
+                seen.add(row["question"])
+            if len(rows) == 5:
+                break
+    return rows[:5], warning
+
+
+def refine_prediction(top_three: list[dict], question_rows: list[dict], answers: dict) -> dict:
+    """Refine image-model scores using answer boosts from Excel or fallback rules."""
+    scores = {item["disease"]: float(item["score"]) for item in top_three}
+
+    for row in question_rows:
+        disease = row["disease"]
+        question = row["question"]
+        answer = answers.get(question, "Choose one")
+        if disease not in scores:
+            continue
+        if answer == "Yes":
+            scores[disease] += float(row.get("yes_boost", 0))
+        elif answer == "No":
+            scores[disease] += float(row.get("no_boost", 0))
+        elif answer == "Maybe":
+            scores[disease] += float(row.get("maybe_boost", 0))
+        elif answer == "I don't know":
+            scores[disease] += float(row.get("dont_know_boost", 0))
+
+    scores = {disease: max(0.0, min(score, 0.96)) for disease, score in scores.items()}
+    disease = max(scores, key=scores.get)
+    risk = round(scores[disease] * 100)
+    info = DISEASE_INFO.get(disease, DISEASE_INFO["Irritant Contact Dermatitis"]).copy()
+    info.update(
+        {
+            "name": disease,
+            "risk": risk,
+            "scores": scores,
+            "level": "High" if risk >= 80 else "Medium" if risk >= 60 else "Low",
+        }
     )
-    for item in prediction["advice"]:
-        st.markdown(f'<div class="todo-item"><span class="green-check">✓</span><span>{item}</span></div>', unsafe_allow_html=True)
-    st.markdown(
-        """
-        </div>
-        <div class="note">This is not a medical diagnosis. It is only a guide. If it gets worse, please see a doctor.</div>
-        """,
-        unsafe_allow_html=True,
-    )
-    if st.button("Check another", key="check-another"):
-        st.session_state.screen = "upload"
-        st.session_state.prediction = None
-        st.rerun()
-    if st.button("Home", key="home"):
-        st.session_state.screen = "menu"
-        st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
+    return info
 
 
-def chat_page():
-    app_header("Ask about skin care", "menu")
-    st.markdown('<div class="chat-page">', unsafe_allow_html=True)
-    st.markdown(
-        """
-        <div class="chat-logo">✋</div>
-        <div class="chat-heading">Hello! Ask me anything about skin problems from<br>sea water, sun, or fishing work.</div>
-        """,
-        unsafe_allow_html=True,
+def language_page() -> None:
+    st.title("SkinSense")
+    st.subheader("AI skin screening for fishing communities")
+    st.caption(f"Welcome, {st.session_state.get('user_name', '')}")
+
+    with st.container(border=True):
+        st.markdown('<p class="small-label">Choose your language</p>', unsafe_allow_html=True)
+        choice = st.radio(
+            "Language",
+            ["Marathi", "Hindi", "English"],
+            horizontal=True,
+            label_visibility="collapsed",
+        )
+        st.session_state["language"] = choice
+        if st.button("Continue", use_container_width=True):
+            st.session_state["screen"] = "menu"
+            st.rerun()
+
+    st.info(
+        "SkinSense is a screening aid, not a medical diagnosis. For serious or worsening symptoms, please visit a dermatologist."
     )
+
+
+def menu_page() -> None:
+    st.title("What would you like to do?")
+    check_col, chat_col = st.columns(2)
+    with check_col:
+        with st.container(border=True):
+            st.header("📷 Check my skin")
+            st.write("Upload or take a photo of the skin problem and get a quick check.")
+            if st.button("Start skin check", use_container_width=True):
+                st.session_state["screen"] = "upload"
+                st.rerun()
+    with chat_col:
+        with st.container(border=True):
+            st.header("💬 Ask a question")
+            st.write("Ask simple questions about skin care, sea water, sun, itching, or rashes.")
+            if st.button("Open skin helper", use_container_width=True):
+                st.session_state["screen"] = "chat"
+                st.rerun()
+
+
+def upload_page() -> None:
+    st.title("Show us the skin problem")
+    st.write("Take a clear photo in good light, close to the affected skin.")
+
+    with st.form("image_upload_form"):
+        camera_photo = st.camera_input("Take a photo")
+        uploaded_photo = st.file_uploader("Or choose from gallery", type=["jpg", "jpeg", "png"])
+        submitted = st.form_submit_button("Continue", use_container_width=True)
+
+    image_file = camera_photo or uploaded_photo
+    if image_file:
+        st.image(image_file, caption="Selected image", use_container_width=True)
+
+    if submitted:
+        if image_file is None:
+            st.warning("Please take or upload a photo first.")
+            return
+        st.session_state["uploaded_name"] = getattr(image_file, "name", "camera_photo.jpg")
+        with st.status("Checking image...", expanded=False):
+            top_three, warning = predict_top_three_from_image(image_file)
+            st.session_state["top_3_predictions"] = top_three
+            question_rows, question_warning = choose_question_rows(top_three)
+            st.session_state["question_rows"] = question_rows
+        if warning:
+            st.info(warning)
+        if question_warning:
+            st.info(question_warning)
+        st.session_state["screen"] = "questions"
+        st.rerun()
+
+
+def questions_page() -> None:
+    top_three = st.session_state.get("top_3_predictions") or demo_top_three()
+    question_rows = st.session_state.get("question_rows") or choose_question_rows(top_three)[0]
+
+    st.title("A few simple questions")
+    st.write("These five questions are chosen from the top three possible image results.")
+
+    with st.expander("Top three possible results"):
+        for item in top_three:
+            st.write(f"{item['disease']}: {round(item['score'] * 100)}%")
+
+    with st.form("followup_questions_form"):
+        answers = {}
+        for index, row in enumerate(question_rows, start=1):
+            answers[row["question"]] = st.selectbox(
+                f"Q{index}. {row['question']}",
+                ANSWER_OPTIONS,
+                key=f"answer_{index}",
+            )
+        submitted = st.form_submit_button("See result", use_container_width=True)
+
+    if submitted:
+        unanswered = [answer for answer in answers.values() if answer == "Choose one"]
+        if unanswered:
+            st.warning("Please choose an answer for each question. Use “I don't know” if unsure.")
+            return
+        st.session_state["prediction"] = refine_prediction(top_three, question_rows, answers)
+        st.session_state["screen"] = "result"
+        st.rerun()
+
+
+def result_page() -> None:
+    prediction = st.session_state.get("prediction")
+    if not prediction:
+        st.session_state["screen"] = "upload"
+        st.rerun()
+
+    st.caption("Your result")
+    st.markdown(f'<div class="result-name">{prediction["name"]}</div>', unsafe_allow_html=True)
+    st.write("This is an early screening result based on the image and your answers.")
+
+    with st.container(border=True):
+        st.subheader("Risk level")
+        st.metric(label=prediction["level"], value=f"{prediction['risk']}%")
+        st.progress(min(prediction["risk"], 100) / 100)
+
+    with st.container(border=True):
+        st.subheader("When to see a dermatologist")
+        st.success(prediction["doctor"])
+
+    with st.container(border=True):
+        st.subheader("What you can do")
+        for item in prediction["advice"]:
+            st.write(f"✓ {item}")
+
+    st.warning("This is not a medical diagnosis. It is only a guide. If it gets worse, please see a doctor.")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Check another", use_container_width=True):
+            st.session_state["screen"] = "upload"
+            st.session_state["prediction"] = None
+            st.rerun()
+    with col2:
+        if st.button("Home", use_container_width=True):
+            st.session_state["screen"] = "menu"
+            st.rerun()
+
+
+def chat_answer(question: str) -> str:
+    """Simple rule-based helper for common skin care questions."""
+    q = question.lower()
+    if "toe" in q or "white" in q:
+        return "White patches between toes can happen when feet stay wet. Dry between toes and see a dermatologist if it spreads."
+    if "salt" in q or "water" in q or "sea" in q:
+        return "Rinse with clean water after work, dry well, change wet gloves or boots, and cover small cuts."
+    if "itch" in q:
+        return "Do not scratch. Wash gently, dry the skin, and avoid wet gloves for long periods."
+    if "doctor" in q or "dermatologist" in q:
+        return "See a dermatologist if there is pain, pus, swelling, fever, spreading, or no improvement."
+    return "Keep the skin clean and dry. If symptoms worsen, please see a dermatologist."
+
+
+def chat_page() -> None:
+    st.title("Ask about skin care")
+    st.write("Ask simple questions about skin problems from sea water, sun, or fishing work.")
+
     prompts = [
         "My hands itch after fishing",
         "How to protect skin from salt water?",
         "White patches between my toes",
     ]
-    for prompt in prompts:
-        st.markdown(f'<div class="prompt-card">{prompt}</div>', unsafe_allow_html=True)
-        if st.button(prompt, key=f"prompt-{prompt}"):
-            st.session_state.chat_answer = chat_answer(prompt)
-            st.rerun()
-    st.markdown('<div class="chat-input-space"></div>', unsafe_allow_html=True)
-    question = st.text_input("Type your question...", label_visibility="collapsed", placeholder="Type your question...")
-    if st.button("↵", key="send-chat"):
-        st.session_state.chat_answer = chat_answer(question)
+    cols = st.columns(3)
+    for col, prompt in zip(cols, prompts):
+        with col:
+            if st.button(prompt, use_container_width=True):
+                st.session_state["chat_history"].append(("user", prompt))
+                st.session_state["chat_history"].append(("assistant", chat_answer(prompt)))
+                st.rerun()
+
+    for role, message in st.session_state["chat_history"]:
+        with st.chat_message(role):
+            st.write(message)
+
+    question = st.chat_input("Type your question...")
+    if question:
+        st.session_state["chat_history"].append(("user", question))
+        st.session_state["chat_history"].append(("assistant", chat_answer(question)))
         st.rerun()
-    if st.session_state.chat_answer:
-        st.info(st.session_state.chat_answer)
-    if st.button("Home", key="chat-home"):
-        st.session_state.screen = "menu"
+
+
+def main() -> None:
+    init_state()
+    apply_branding()
+
+    if not st.session_state.get("logged_in"):
+        login_page()
+        return
+
+    render_sidebar()
+    show_tracking_warning_once()
+
+    screen = st.session_state.get("screen", "language")
+    if screen == "language":
+        language_page()
+    elif screen == "menu":
+        menu_page()
+    elif screen == "upload":
+        upload_page()
+    elif screen == "questions":
+        questions_page()
+    elif screen == "result":
+        result_page()
+    elif screen == "chat":
+        chat_page()
+    else:
+        st.session_state["screen"] = "language"
         st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
 
 
-def chat_answer(question):
-    q = question.lower()
-    if "toe" in q or "white" in q:
-        return "White patches between toes can happen when feet stay wet. Dry between toes and see a dermatologist if it spreads."
-    if "salt" in q or "water" in q:
-        return "Rinse with clean water after work, dry well, change wet gloves or boots, and cover small cuts."
-    if "itch" in q:
-        return "Do not scratch. Wash gently, dry the skin, and avoid wet gloves for long periods."
-    return "Keep the skin clean and dry. See a dermatologist if there is pain, pus, swelling, fever, or spreading."
-
-
-init_state()
-app_css()
-
-if not st.session_state.get("logged_in", False):
-    login_page()
-    st.stop()
-
-authenticated_sidebar()
-
-if st.session_state.screen == "language":
-    language_page()
-elif st.session_state.screen == "menu":
-    menu_page()
-elif st.session_state.screen == "upload":
-    upload_page()
-elif st.session_state.screen == "questions":
-    questions_page()
-elif st.session_state.screen == "result":
-    result_page()
-elif st.session_state.screen == "chat":
-    chat_page()
+if __name__ == "__main__":
+    main()
