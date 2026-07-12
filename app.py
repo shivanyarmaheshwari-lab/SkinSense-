@@ -559,13 +559,13 @@ def logout() -> None:
 def top_nav(show_back: bool = False, back_to: str = "home", show_home: bool = True) -> None:
     cols = st.columns([1, 1, 1])
     with cols[0]:
-        if show_back and st.button(ui_text("back"), use_container_width=True):
+        if show_back and st.button(ui_text("back"), key=f"top_back_{back_to}", use_container_width=True):
             navigate(back_to)
     with cols[1]:
-        if show_home and st.button(ui_text("home"), use_container_width=True):
+        if show_home and st.button(ui_text("home"), key="top_home", use_container_width=True):
             navigate("home")
     with cols[2]:
-        if st.button(ui_text("logout"), use_container_width=True):
+        if st.button(ui_text("logout"), key="top_logout", use_container_width=True):
             logout()
 
 
@@ -771,17 +771,17 @@ def result_page() -> None:
 
     cols = st.columns(3)
     with cols[0]:
-        if st.button(ui_text("save_recovery"), use_container_width=True):
+        if st.button(ui_text("save_recovery"), key="result_save_recovery", use_container_width=True):
             save_current_to_recovery()
             st.success(ui_text("saved_recovery"))
     with cols[1]:
-        if st.button(ui_text("check_another"), use_container_width=True):
+        if st.button(ui_text("check_another"), key="result_check_another", use_container_width=True):
             st.session_state["image_meta"] = None
             st.session_state["inference_result"] = None
             st.session_state["followup_answers"] = {}
             navigate("upload")
     with cols[2]:
-        if st.button(ui_text("home"), use_container_width=True):
+        if st.button(ui_text("home"), key="result_bottom_home", use_container_width=True):
             navigate("home")
 
 
