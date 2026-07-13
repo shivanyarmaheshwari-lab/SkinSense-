@@ -1,0 +1,44 @@
+2309f8b6096a6d7cab607672c39f7c3ab18e8280
+
+google_sheet_id = "1VCwoQWGVI-9y7m9WGlWQlM4nSZ4Hs0F6TqexuuMYbPU"
+
+[gcp_service_account]
+type = "service_account"
+project_id = "skinsense-502014"
+private_key_id = "2309f8b6096a6d7cab607672c39f7c3ab18e8280"
+private_key = """-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC4F03TzKcH3o3K
+qLVuFWEKW3YfIeWYFXCYPi81y7Sc/ciONnqbgV3uBiJJAVwL10uYaFK/GhB3nSo1
+w48DCSviCoOozVU4+pcrKDBeSUbiQSQCOTqbeh7QNxl+TSsrlIbRp/iJdkI2J96j
+GEHj9j1hQohxlUJbjoaGLTZ1wza0SrWDllwnfn12TPnQuNMSxCftAaNrlTzL8XE2
+DaqtuItZ6B6lJhOn5zSW9ekAsJzIx0ZQcja5t4nB7uIcE+SqMLyt4wr9qyRj9xZh
+YxN9siREhzWaj52/sAPkqvOdHuzE7NQjS59RvG4uevmwZBGBR+Dw5CKuKSV6yNIA
+p1cwjty1AgMBAAECggEANmgkx0j/wJKk41VTMbK92FrJoU/aVEVZ3pTaTRLkUVWr
+9WPifp0QTq2famYtdw5tOCD0+6fPYBqiA/vFA4etYYPr/3KYElv1W3roOKV9fpbz
+9nhFevfvrWfrb+mMrbea1NHI4Y+C6BCGeztLFf2LjHgmbTNIxlhsJ7GrG8jTHRtK
+dFFfaQ+43J1LPNsJ+0VD6854CpNtxVGn4s++fREJi754kaJKkP1nuFV5ALW8vUAl
+toOH7NGQtmMjVcTHLdhGIiigTruywFdU2n9Bp7iY2rV1+68VEm3EGdOmlNonEKxi
+ngN5FfjtsqPs8VTiW4oNK2s8ZiR7RDuCDFA9dWhpDQKBgQDvcW5FBGeBziRkfBPP
+3V2I4UEB+4+bh64ufbU7F7i4vcJNsbhVqRUOqN+T623+NEQB+5SAWe8eUxB+VouM
+QwCJxxX8v7dxS7ruyhD9umODmalS43QDCy5OBKt4FQmwuGJZaVECbv2C76y4AeJv
+lasxuqhLRly9A4U5Q33nWSZQLwKBgQDE0gsRx0hjoWpyENMTb1qoSJyQPd7YwUNx
+ZXdwYacucczcl/ts/BXZdb5ytpBbG4af4Hy4ZEiNKdn9/R8tqg9vJvI9+h9LykRO
+lWBUtzyXjpCi5tViuXBStpeoW2L2/hNZzDQ5csjPQedIJ5OLrwveoNLO8QubORFe
+S7QPS8JkWwKBgQCb9oac7gF9y4ho62j8PHRwdEijwfgIlpgeMEOb+heYPgISGXC4
+WyocImNhqvOdwSboyMDghy+CgGItlCw2HWXJc1yqryYSGh6HyoyH+JeM2R8BXg
+5aeDqgcGcK2fLnrhQnhB3YnDf9pBAPk9NYANJEf6wBooA+MDKbMYvjj2gQKBgCNN
+dXTT5NUR/9DD2chTodQragGpR05jo+A0De9XZLA88zzh+dP7h0PBDc7vlgbxcf09
+O8GrIyRGzHX1L+F17lzGhI6/TVu/xO6/dk7bqv+YL7M4ai/SCSac36jv81lQC1KB
+ASEIyKH8NSrJBnr4g82D1SwPKkDGRKpAM+TGdvCfAoGAWXy72NcGUR/p5C4NRyyV
+SIRNCptJEBtNiWXLuO4+bldgfumE+uDHFwtYK4FLj5Av5Yi4rJd1NldKNJynTVEM
+xdqQkptOEyKpdWa1V2485Jefe3CHR91jO+FfFnsPjOgSqx/oTDZ/kmxnJ/1/ddlA
+m8QQWhr8rnNvyvRA16hfZSQ=
+-----END PRIVATE KEY-----
+"""
+client_email = "[skinsense@skinsense-502014.iam.gserviceaccount.com](mailto:skinsense@skinsense-502014.iam.gserviceaccount.com)"
+client_id = "109028710503644879463"
+auth_uri = "https://accounts.google.com/o/oauth2/auth"
+token_uri = "https://oauth2.googleapis.com/token"
+auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+client_x509_cert_url = "https://www.googleapis.com/robot/v1/metadata/x509/skinsense%40skinsense-502014.iam.gserviceaccount.com"
+universe_domain = "googleapis.com"
