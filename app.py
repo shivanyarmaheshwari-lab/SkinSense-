@@ -1,26 +1,38 @@
 from __future__ import annotations
 
 import json
-import logging
 import re
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Any
-from zoneinfo import ZoneInfo
+from zipfile import ZipFile
 
+import numpy as np
 import streamlit as st
 from PIL import Image, UnidentifiedImageError
+from tensorflow.keras.models import load_model
 
 
-# -----------------------------------------------------------------------------
-# 1. Imports and configuration
-# -----------------------------------------------------------------------------
+# ============================================================
+# UPDATE THESE FILES AFTER TRAINING IN COLAB
+# ============================================================
+BASE_DIR = Path(__file__).resolve().parent
 
-logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
+# Put the model downloaded from Colab in the same GitHub folder as app.py.
+MODEL_PATH = BASE_DIR / "skinsense_model.keras"
 
+# Put the class_names.json downloaded from Colab in the same GitHub folder as app.py.
+CLASS_NAMES_PATH = BASE_DIR / "class_names.json"
+
+# Put your Excel text/question dataset in the same GitHub folder as app.py.
+QUESTION_MATRIX_PATH = BASE_DIR / "Skin_Disease_Question_Matrix.xlsx"
+
+
+# ============================================================
+# App settings
+# ============================================================
 st.set_page_config(
     page_title="SkinSense",
     page_icon="🩺",
@@ -28,394 +40,96 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_SPREADSHEET_ID = "1VCwoQWGVI-9y7m9WGlWQlM4nSZ4Hs0F6TqexuuMYbPU"
-DEFAULT_WORKSHEET_NAME = "Sheet1"
-GOOGLE_SCOPES = ("https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive")
+IMAGE_SIZE = (224, 224)
+MAX_IMAGE_MB = 10
+ANSWER_OPTIONS = ["Yes", "No", "Sometimes", "I don't know"]
+VALID_PAGES = {"start", "upload", "questions", "result"}
 
-MAX_NAME_LENGTH = 80
-MAX_IMAGE_BYTES = 10 * 1024 * 1024
-SUPPORTED_IMAGE_FORMATS = {"JPEG", "PNG"}
-VALID_SCREENS = {"language", "home", "upload", "questions", "result", "recovery", "chatbot"}
-
-MODEL_CANDIDATES = (
-    BASE_DIR / "skinsense_model.pt",
-    BASE_DIR / "skinsense_model.pth",
-    BASE_DIR / "model.pt",
-    BASE_DIR / "model.pth",
-)
-
-DISEASES = [
-    "Irritant Contact Dermatitis",
-    "Occupational Hand Eczema",
-    "Athlete's Foot / Tinea Pedis",
-    "Ringworm / Tinea Corporis",
-    "Cutaneous Candidiasis",
-    "Folliculitis",
-    "Cellulitis",
-    "Impetigo",
-    "Sunburn",
-    "Actinic Keratosis",
-]
-
-URGENCY_HOME = "Home care"
-URGENCY_DERM = "Dermatologist soon"
-URGENCY_URGENT = "Urgent medical attention"
-
-
-# -----------------------------------------------------------------------------
-# 2. Translations and disease metadata
-# -----------------------------------------------------------------------------
 
 TEXT = {
     "English": {
         "tagline": "AI skin screening support for fishing communities.",
-        "name_label": "Enter your name",
+        "name": "Enter your name",
+        "language": "Choose language",
         "continue": "Continue",
-        "name_empty": "Please enter your name to continue.",
-        "name_long": "Please enter a shorter name, up to 80 characters.",
-        "tracking_failed": "SkinSense opened successfully, but usage tracking could not be saved.",
+        "upload_title": "Upload a clear skin photo",
+        "upload_help": "Use a JPG or PNG photo under 10 MB. Take the photo close to the skin in good light.",
+        "questions_title": "Answer 5 simple questions",
+        "result_title": "Your SkinSense result",
         "disclaimer": "SkinSense is a screening aid, not a medical diagnosis. Please see a dermatologist for serious or worsening symptoms.",
-        "choose_language": "Choose your language",
-        "home_title": "What would you like to do?",
-        "welcome": "Welcome",
-        "logout": "Logout",
-        "back": "Back",
-        "home": "Home",
-        "check_skin": "Check my skin",
-        "check_skin_help": "Take or upload a clear photo of the skin problem.",
-        "recovery": "Recovery tracking",
-        "recovery_help": "View checks saved during this session.",
-        "chat": "Ask a skin-care question",
-        "chat_help": "General care guidance for seawater, sun, itching, and rashes.",
-        "upload_title": "Show us the skin problem",
-        "upload_help": "Use JPG or PNG under 10 MB. Take the photo close to the skin in good light.",
-        "camera": "Camera",
-        "gallery": "Gallery",
-        "image_ready": "Image ready.",
-        "run_check": "Continue",
-        "demo_mode": "Demo mode: no trained model is connected, so no real image analysis occurred.",
-        "questions_title": "Two safety questions",
-        "urgent_question": "Do you have fever, pus, major swelling, severe pain, or rapidly spreading redness?",
-        "breathing_question": "Do you have facial swelling or trouble breathing?",
-        "yes": "Yes",
-        "no": "No",
-        "answer_all": "Please answer both questions before continuing.",
-        "see_result": "See result",
-        "result_title": "Your result",
-        "possible_condition": "Possible condition",
-        "confidence": "AI confidence",
-        "urgency": "Urgency",
-        "next_step": "Next step",
-        "alternatives": "Other possible matches",
-        "save_recovery": "Save to recovery history",
-        "saved_recovery": "Saved to recovery history.",
-        "check_another": "Check another image",
-        "no_history": "No scans saved in this session yet.",
-        "comparison_note": "Automatic image comparison is not connected yet. You can mark how it looks now.",
-        "status_label": "How does it look now?",
-        "improving": "Improving",
-        "unchanged": "Unchanged",
-        "worsening": "Worsening",
-        "chat_title": "Ask about skin care",
-        "chat_placeholder": "Type your question...",
-        "clear_chat": "Clear chat",
     },
     "हिंदी": {
         "tagline": "मछुआरा समुदायों के लिए AI त्वचा स्क्रीनिंग सहायता.",
-        "name_label": "अपना नाम लिखें",
+        "name": "अपना नाम लिखें",
+        "language": "भाषा चुनें",
         "continue": "आगे बढ़ें",
-        "name_empty": "आगे बढ़ने के लिए अपना नाम लिखें.",
-        "name_long": "कृपया 80 अक्षरों तक छोटा नाम लिखें.",
-        "tracking_failed": "SkinSense खुल गया, लेकिन उपयोग रिकॉर्ड सेव नहीं हो पाया.",
+        "upload_title": "त्वचा की साफ फोटो अपलोड करें",
+        "upload_help": "10 MB से कम JPG या PNG फोटो डालें. फोटो अच्छी रोशनी में त्वचा के पास से लें.",
+        "questions_title": "5 आसान सवालों के जवाब दें",
+        "result_title": "आपका SkinSense परिणाम",
         "disclaimer": "SkinSense स्क्रीनिंग सहायता है, मेडिकल निदान नहीं. गंभीर या बढ़ते लक्षणों के लिए त्वचा डॉक्टर से मिलें.",
-        "choose_language": "भाषा चुनें",
-        "home_title": "आप क्या करना चाहेंगे?",
-        "welcome": "स्वागत है",
-        "logout": "लॉग आउट",
-        "back": "पीछे",
-        "home": "होम",
-        "check_skin": "त्वचा जांचें",
-        "check_skin_help": "त्वचा समस्या की साफ फोटो लें या अपलोड करें.",
-        "recovery": "रिकवरी ट्रैकिंग",
-        "recovery_help": "इस सत्र में सेव जांचें देखें.",
-        "chat": "त्वचा देखभाल सवाल पूछें",
-        "chat_help": "समुद्री पानी, धूप, खुजली और रैश पर सामान्य सलाह.",
-        "upload_title": "त्वचा की समस्या दिखाएं",
-        "upload_help": "10 MB से कम JPG या PNG इस्तेमाल करें. अच्छी रोशनी में नजदीक से फोटो लें.",
-        "camera": "कैमरा",
-        "gallery": "गैलरी",
-        "image_ready": "फोटो तैयार है.",
-        "run_check": "आगे बढ़ें",
-        "demo_mode": "डेमो मोड: प्रशिक्षित मॉडल जुड़ा नहीं है, इसलिए फोटो का असली AI विश्लेषण नहीं हुआ.",
-        "questions_title": "दो सुरक्षा सवाल",
-        "urgent_question": "क्या बुखार, पस, ज्यादा सूजन, तेज दर्द, या तेजी से फैलती लालिमा है?",
-        "breathing_question": "क्या चेहरे पर सूजन या सांस लेने में परेशानी है?",
-        "yes": "हाँ",
-        "no": "नहीं",
-        "answer_all": "आगे बढ़ने से पहले दोनों सवालों का जवाब दें.",
-        "see_result": "परिणाम देखें",
-        "result_title": "आपका परिणाम",
-        "possible_condition": "संभावित स्थिति",
-        "confidence": "AI विश्वास",
-        "urgency": "तात्कालिकता",
-        "next_step": "अगला कदम",
-        "alternatives": "अन्य संभावनाएं",
-        "save_recovery": "रिकवरी इतिहास में सेव करें",
-        "saved_recovery": "रिकवरी इतिहास में सेव हुआ.",
-        "check_another": "दूसरी फोटो जांचें",
-        "no_history": "इस सत्र में अभी कोई जांच सेव नहीं है.",
-        "comparison_note": "ऑटोमैटिक फोटो तुलना अभी जुड़ी नहीं है. आप अभी की स्थिति मार्क कर सकते हैं.",
-        "status_label": "अब कैसा लग रहा है?",
-        "improving": "बेहतर",
-        "unchanged": "जैसा था",
-        "worsening": "बढ़ रहा है",
-        "chat_title": "त्वचा देखभाल पूछें",
-        "chat_placeholder": "अपना सवाल लिखें...",
-        "clear_chat": "चैट साफ करें",
     },
     "मराठी": {
         "tagline": "मच्छीमार समुदायांसाठी AI त्वचा स्क्रीनिंग मदत.",
-        "name_label": "तुमचे नाव लिहा",
+        "name": "तुमचे नाव लिहा",
+        "language": "भाषा निवडा",
         "continue": "पुढे",
-        "name_empty": "पुढे जाण्यासाठी तुमचे नाव लिहा.",
-        "name_long": "कृपया 80 अक्षरांपर्यंत लहान नाव लिहा.",
-        "tracking_failed": "SkinSense उघडले, पण वापराची नोंद सेव झाली नाही.",
+        "upload_title": "त्वचेचा स्पष्ट फोटो अपलोड करा",
+        "upload_help": "10 MB पेक्षा कमी JPG किंवा PNG फोटो वापरा. चांगल्या प्रकाशात जवळून फोटो घ्या.",
+        "questions_title": "5 सोप्या प्रश्नांची उत्तरे द्या",
+        "result_title": "तुमचा SkinSense निकाल",
         "disclaimer": "SkinSense ही स्क्रीनिंग मदत आहे, वैद्यकीय निदान नाही. गंभीर किंवा वाढणाऱ्या लक्षणांसाठी त्वचा डॉक्टरांना भेटा.",
-        "choose_language": "भाषा निवडा",
-        "home_title": "तुम्हाला काय करायचे आहे?",
-        "welcome": "स्वागत आहे",
-        "logout": "लॉग आउट",
-        "back": "मागे",
-        "home": "होम",
-        "check_skin": "त्वचा तपासा",
-        "check_skin_help": "त्वचेच्या समस्येचा स्पष्ट फोटो घ्या किंवा अपलोड करा.",
-        "recovery": "रिकव्हरी ट्रॅकिंग",
-        "recovery_help": "या सत्रात सेव केलेल्या तपासण्या पहा.",
-        "chat": "त्वचा काळजी प्रश्न विचारा",
-        "chat_help": "समुद्राचे पाणी, ऊन, खाज आणि पुरळ याबद्दल सामान्य मदत.",
-        "upload_title": "त्वचेची समस्या दाखवा",
-        "upload_help": "10 MB पेक्षा कमी JPG किंवा PNG वापरा. चांगल्या प्रकाशात जवळून फोटो घ्या.",
-        "camera": "कॅमेरा",
-        "gallery": "गॅलरी",
-        "image_ready": "फोटो तयार आहे.",
-        "run_check": "पुढे",
-        "demo_mode": "डेमो मोड: प्रशिक्षित मॉडेल जोडलेले नाही, त्यामुळे फोटोचे खरे AI विश्लेषण झाले नाही.",
-        "questions_title": "दोन सुरक्षा प्रश्न",
-        "urgent_question": "ताप, पू, जास्त सूज, तीव्र वेदना किंवा झपाट्याने पसरणारी लालसरता आहे का?",
-        "breathing_question": "चेहऱ्यावर सूज किंवा श्वास घेण्यास त्रास आहे का?",
-        "yes": "हो",
-        "no": "नाही",
-        "answer_all": "पुढे जाण्यापूर्वी दोन्ही प्रश्नांची उत्तरे द्या.",
-        "see_result": "निकाल पहा",
-        "result_title": "तुमचा निकाल",
-        "possible_condition": "संभाव्य स्थिती",
-        "confidence": "AI विश्वास",
-        "urgency": "तातडी",
-        "next_step": "पुढील पाऊल",
-        "alternatives": "इतर शक्यता",
-        "save_recovery": "रिकव्हरी इतिहासात सेव करा",
-        "saved_recovery": "रिकव्हरी इतिहासात सेव झाले.",
-        "check_another": "दुसरा फोटो तपासा",
-        "no_history": "या सत्रात अजून कोणतीही तपासणी सेव नाही.",
-        "comparison_note": "ऑटोमॅटिक फोटो तुलना अजून जोडलेली नाही. तुम्ही स्थिती मार्क करू शकता.",
-        "status_label": "आता कसे दिसते?",
-        "improving": "सुधारत आहे",
-        "unchanged": "तसेच आहे",
-        "worsening": "वाढत आहे",
-        "chat_title": "त्वचा काळजी विचारा",
-        "chat_placeholder": "तुमचा प्रश्न लिहा...",
-        "clear_chat": "चॅट साफ करा",
     },
 }
 
 
 DISEASE_INFO = {
     "Irritant Contact Dermatitis": "Often linked with repeated contact with seawater, detergents, fish fluids, or wet gloves.",
-    "Occupational Hand Eczema": "A hand rash that can be worsened by wet work, friction, and irritants.",
-    "Athlete's Foot / Tinea Pedis": "A fungal infection that can affect feet kept wet in boots.",
-    "Ringworm / Tinea Corporis": "A fungal rash that may look circular or ring-shaped.",
-    "Cutaneous Candidiasis": "A yeast infection favored by moisture, sweating, and skin folds.",
-    "Folliculitis": "Inflamed hair follicles that may form small bumps or pus spots.",
-    "Cellulitis": "A deeper skin infection that can spread and may need urgent care.",
-    "Impetigo": "A contagious bacterial skin infection with sores or crusting.",
-    "Sunburn": "Skin irritation from strong sun exposure.",
-    "Actinic Keratosis": "A rough sun-damaged patch that should be checked by a doctor.",
+    "Occupational Hand Eczema": "A recurring hand rash that can be worsened by wet work, friction, and irritants.",
+    "Athlete's Foot (Tinea pedis)": "A fungal infection that often affects skin between the toes or feet kept wet in boots.",
+    "Ringworm (Tinea corporis)": "A fungal rash that can look circular or ring-shaped with a red edge.",
+    "Cutaneous Candidiasis": "A yeast infection that can happen in moist skin folds.",
+    "Paronychia": "Inflammation or infection around a fingernail or toenail.",
+    "Folliculitis": "Inflamed hair follicles that can look like small pimples or bumps.",
+    "Cellulitis": "A deeper skin infection that can spread and may need urgent medical care.",
+    "Impetigo": "A contagious bacterial skin infection that may form yellow crusting or fluid.",
+    "Sunburn": "Skin irritation or injury after sun exposure.",
+    "Actinic Keratosis": "A rough sun-damaged patch that should be checked by a dermatologist.",
 }
 
 
 @dataclass
-class ImageMeta:
-    data: bytes
-    filename: str
-    mime_type: str
-    width: int
-    height: int
-    uploaded_at: str
-
-
-@dataclass
-class InferenceResult:
-    status: str
-    condition: str | None
-    confidence: float | None
-    explanation: str
+class Prediction:
+    condition: str
+    image_confidence: float
+    final_score: float
+    top_predictions: list[tuple[str, float]]
     urgency: str
-    urgency_message: str
-    top_predictions: list[str]
-    needs_follow_up: bool
-    demo_mode: bool
+    advice: str
+    explanation: str
 
 
-# -----------------------------------------------------------------------------
-# 3. Session-state initialization
-# -----------------------------------------------------------------------------
-
-def init_state() -> None:
-    defaults: dict[str, Any] = {
-        "logged_in": False,
-        "user_name": "",
-        "language": "English",
-        "screen": "language",
-        "login_tracking_attempted": False,
-        "login_tracking_saved": False,
-        "login_tracking_warning": "",
-        "image_meta": None,
-        "inference_result": None,
-        "followup_answers": {},
-        "result_ready": False,
-        "recovery_history": [],
-        "chat_history": [],
-        "recovery_saved_current": False,
-    }
-    for key, value in defaults.items():
-        st.session_state.setdefault(key, value)
-
-
-def ui_text(key: str) -> str:
-    return TEXT.get(st.session_state.get("language", "English"), TEXT["English"]).get(key, key)
-
-
-# -----------------------------------------------------------------------------
-# 4. Google Sheets service functions
-# -----------------------------------------------------------------------------
-
-def normalize_private_key(value: Any) -> str:
-    """Normalize service-account private keys pasted into Streamlit Secrets."""
-    key = str(value or "").strip()
-    key = key.replace("\\n", "\n").replace("\r\n", "\n").replace("\r", "\n")
-    begin_marker = "-----BEGIN PRIVATE KEY-----"
-    end_marker = "-----END PRIVATE KEY-----"
-    if begin_marker not in key or end_marker not in key:
-        raise ValueError("Malformed private key")
-    start = key.index(begin_marker)
-    end = key.index(end_marker) + len(end_marker)
-    lines = [line.strip() for line in key[start:end].split("\n") if line.strip()]
-    return "\n".join(lines) + "\n"
-
-
-def get_secret_value(name: str, default: str = "") -> str:
-    try:
-        return str(st.secrets.get(name, default)).strip()
-    except Exception:
-        return default
-
-
-def get_service_account_info() -> dict[str, Any]:
-    try:
-        for section_name in ("gcp_service_account", "google_service_account", "service_account"):
-            if section_name in st.secrets:
-                info = dict(st.secrets[section_name])
-                break
-        else:
-            raise KeyError("No service-account section found")
-    except Exception as exc:
-        raise RuntimeError("Google Sheets credentials are missing.") from exc
-
-    required = ("type", "project_id", "private_key", "client_email", "token_uri")
-    missing = [field for field in required if not info.get(field)]
-    if missing:
-        raise RuntimeError("Google Sheets credentials are incomplete.")
-    info["private_key"] = normalize_private_key(info["private_key"])
-    return info
-
-
-def get_sheet_config() -> tuple[str, str]:
-    sheet_id = get_secret_value("google_sheet_id", DEFAULT_SPREADSHEET_ID)
-    worksheet_name = get_secret_value("worksheet_name", DEFAULT_WORKSHEET_NAME)
-
-    try:
-        if "google_sheets" in st.secrets:
-            google_sheets = dict(st.secrets["google_sheets"])
-            sheet_id = str(google_sheets.get("spreadsheet_id", sheet_id)).strip()
-            worksheet_name = str(google_sheets.get("worksheet_name", worksheet_name)).strip()
-    except Exception:
-        pass
-
-    return sheet_id or DEFAULT_SPREADSHEET_ID, worksheet_name or DEFAULT_WORKSHEET_NAME
-
-
-@st.cache_resource(show_spinner=False)
-def authorize_gspread(credentials_json: str):
-    """Create and cache a Google Sheets client from service-account credentials."""
-    import gspread
-    from google.oauth2.service_account import Credentials
-
-    credentials_info = json.loads(credentials_json)
-    credentials = Credentials.from_service_account_info(credentials_info, scopes=list(GOOGLE_SCOPES))
-    return gspread.authorize(credentials)
-
-
-def append_login_to_sheet(name: str) -> bool:
-    """Append one login row. Failures are logged and returned without blocking the user."""
-    try:
-        credentials_info = get_service_account_info()
-        sheet_id, worksheet_name = get_sheet_config()
-        client = authorize_gspread(json.dumps(credentials_info, sort_keys=True))
-        worksheet = client.open_by_key(sheet_id).worksheet(worksheet_name)
-        timestamp = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat(timespec="seconds")
-        worksheet.append_row([timestamp, name], value_input_option="RAW")
-        return True
-    except Exception:
-        logger.exception("Google Sheets usage tracking failed")
-        return False
-
-
-# -----------------------------------------------------------------------------
-# 5. Validation and utility functions
-# -----------------------------------------------------------------------------
-
-def apply_css() -> None:
+def css() -> None:
     st.markdown(
         """
         <style>
-        :root {
-            --skinsense-bg: #eef9fc;
-            --skinsense-navy: #08213d;
-            --skinsense-blue: #0b6fa4;
-            --skinsense-pale: #e6f5fb;
-            --skinsense-grey: #5c6f7d;
+        .stApp { background: #eef9fc; }
+        h1, h2, h3 { color: #08213d; }
+        p, label, li { color: #08213d; }
+        .block-container { max-width: 760px; padding-top: 2rem; }
+        .brand {
+            width: 74px; height: 74px; border-radius: 50%;
+            background: #075985; color: white; display: flex;
+            align-items: center; justify-content: center;
+            font-size: 36px; margin-bottom: 12px;
         }
-        .stApp { background: var(--skinsense-bg); }
-        h1, h2, h3 { color: var(--skinsense-navy); }
-        p, li { color: var(--skinsense-navy); }
-        .skinsense-logo {
-            width: 4rem;
-            height: 4rem;
-            border-radius: 999px;
-            background: var(--skinsense-blue);
-            color: white;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 2rem;
-            margin-bottom: .5rem;
+        .small-muted { color: #5c6f7d; font-size: 0.95rem; }
+        .stButton > button {
+            min-height: 48px; border-radius: 12px; font-weight: 700;
+            border: 1px solid #0b6fa4;
         }
-        .muted { color: var(--skinsense-grey); }
-        .step {
-            color: var(--skinsense-blue);
-            font-weight: 700;
-            margin-bottom: .25rem;
+        .stButton > button[kind="primary"] {
+            background: #0b6fa4; color: white;
         }
         </style>
         """,
@@ -423,462 +137,396 @@ def apply_css() -> None:
     )
 
 
-def clean_name(value: str) -> str:
-    cleaned = re.sub(r"[\x00-\x1f\x7f]", "", str(value or ""))
-    return re.sub(r"\s+", " ", cleaned).strip()
+def t(key: str) -> str:
+    language = st.session_state.get("language", "English")
+    return TEXT.get(language, TEXT["English"]).get(key, key)
 
 
-def validate_name(value: str) -> tuple[bool, str, str]:
-    cleaned = clean_name(value)
-    if not cleaned:
-        return False, cleaned, ui_text("name_empty")
-    if len(cleaned) > MAX_NAME_LENGTH:
-        return False, cleaned, ui_text("name_long")
-    return True, cleaned, ""
+def clean_name(name: str) -> str:
+    name = re.sub(r"[\x00-\x1f\x7f]", "", name or "")
+    return re.sub(r"\s+", " ", name).strip()
 
 
-def validate_image(uploaded_file: Any) -> tuple[bool, str, ImageMeta | None]:
+def init_state() -> None:
+    defaults = {
+        "page": "start",
+        "name": "",
+        "language": "English",
+        "image_bytes": None,
+        "image_name": "",
+        "image_prediction": None,
+        "question_list": [],
+        "answers": {},
+        "final_prediction": None,
+    }
+    for key, value in defaults.items():
+        st.session_state.setdefault(key, value)
+
+
+def go(page: str) -> None:
+    st.session_state["page"] = page if page in VALID_PAGES else "start"
+    st.rerun()
+
+
+def cell_text(cell: ET.Element, shared_strings: list[str], ns: dict[str, str]) -> str:
+    if cell.attrib.get("t") == "inlineStr":
+        return "".join((node.text or "") for node in cell.findall(".//a:t", ns)).strip()
+    value = cell.find("a:v", ns)
+    if value is None:
+        return ""
+    raw = value.text or ""
+    if cell.attrib.get("t") == "s" and raw.isdigit():
+        return shared_strings[int(raw)].strip()
+    return raw.strip()
+
+
+def col_index(cell_ref: str) -> int:
+    letters = "".join(char for char in cell_ref if char.isalpha())
+    number = 0
+    for char in letters:
+        number = number * 26 + ord(char.upper()) - 64
+    return number - 1
+
+
+@st.cache_data(show_spinner=False)
+def load_question_matrix() -> tuple[list[str], list[str], dict[str, dict[str, str]], dict[str, list[str]]]:
+    """Read the Excel question matrix without pandas/openpyxl."""
+    if not QUESTION_MATRIX_PATH.exists():
+        raise FileNotFoundError(f"Missing question matrix: {QUESTION_MATRIX_PATH.name}")
+
+    ns = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    with ZipFile(QUESTION_MATRIX_PATH) as workbook:
+        shared_strings: list[str] = []
+        if "xl/sharedStrings.xml" in workbook.namelist():
+            root = ET.fromstring(workbook.read("xl/sharedStrings.xml"))
+            for item in root.findall("a:si", ns):
+                shared_strings.append("".join((text.text or "") for text in item.findall(".//a:t", ns)))
+
+        sheet = ET.fromstring(workbook.read("xl/worksheets/sheet1.xml"))
+        row_values: dict[int, dict[int, str]] = {}
+        max_col = 0
+        for row in sheet.findall("a:sheetData/a:row", ns):
+            row_number = int(row.attrib["r"])
+            row_values[row_number] = {}
+            for cell in row.findall("a:c", ns):
+                index = col_index(cell.attrib["r"])
+                row_values[row_number][index] = cell_text(cell, shared_strings, ns)
+                max_col = max(max_col, index)
+
+    table = [
+        [row_values.get(row_number, {}).get(col, "") for col in range(max_col + 1)]
+        for row_number in sorted(row_values)
+    ]
+    if len(table) < 3:
+        raise ValueError("Question matrix must contain headers, questions, and disease rows.")
+
+    disease_headers = table[0]
+    question_texts = table[1]
+    disease_profiles: dict[str, dict[str, str]] = {}
+    question_groups: dict[str, list[str]] = {}
+
+    for col in range(1, len(question_texts)):
+        group = disease_headers[col].strip()
+        question = question_texts[col].strip()
+        if group and question:
+            question_groups.setdefault(group, []).append(question)
+
+    diseases: list[str] = []
+    for row in table[2:]:
+        disease = row[0].strip()
+        if not disease or disease.lower().startswith("note"):
+            continue
+        diseases.append(disease)
+        disease_profiles[disease] = {}
+        for col in range(1, min(len(row), len(question_texts))):
+            question = question_texts[col].strip()
+            expected = row[col].strip()
+            if question and expected:
+                disease_profiles[disease][question] = expected
+
+    return diseases, question_texts[1:], disease_profiles, question_groups
+
+
+def normalize_condition(label: str) -> str:
+    aliases = {
+        "FU-athlete-foot": "Athlete's Foot (Tinea pedis)",
+        "athlete-foot": "Athlete's Foot (Tinea pedis)",
+        "athletes foot": "Athlete's Foot (Tinea pedis)",
+        "Athlete's Foot / Tinea Pedis": "Athlete's Foot (Tinea pedis)",
+        "FU-ringworm": "Ringworm (Tinea corporis)",
+        "Tinea corporis": "Ringworm (Tinea corporis)",
+        "BA- cellulitis": "Cellulitis",
+        "BA-impetigo": "Impetigo",
+        "Actinic_Keratosis": "Actinic Keratosis",
+        "Sun_Sunlight_Damage": "Sunburn",
+    }
+    return aliases.get(label, label)
+
+
+@st.cache_resource(show_spinner=False)
+def load_ai_model():
+    if not MODEL_PATH.exists():
+        raise FileNotFoundError("skinsense_model.keras is missing. Train the model in Colab first, then upload it beside app.py.")
+    if not CLASS_NAMES_PATH.exists():
+        raise FileNotFoundError("class_names.json is missing. Download it from Colab and upload it beside app.py.")
+    model = load_model(MODEL_PATH)
+    class_names = json.loads(CLASS_NAMES_PATH.read_text(encoding="utf-8"))
+    class_names = [normalize_condition(str(name)) for name in class_names]
+    return model, class_names
+
+
+def validate_image(uploaded_file) -> tuple[bytes, Image.Image]:
     if uploaded_file is None:
-        return False, "Please choose an image.", None
-
-    raw = uploaded_file.getvalue()
-    if not raw:
-        return False, "The selected file is empty.", None
-    if len(raw) > MAX_IMAGE_BYTES:
-        return False, "Please use an image under 10 MB.", None
-
+        raise ValueError("Please upload an image.")
+    image_bytes = uploaded_file.getvalue()
+    if not image_bytes:
+        raise ValueError("The uploaded file is empty.")
+    if len(image_bytes) > MAX_IMAGE_MB * 1024 * 1024:
+        raise ValueError(f"Please upload an image under {MAX_IMAGE_MB} MB.")
     try:
-        probe = Image.open(BytesIO(raw))
-        image_format = (probe.format or "").upper()
-        probe.verify()
-        image = Image.open(BytesIO(raw))
-    except (UnidentifiedImageError, OSError, ValueError):
-        return False, "This file could not be decoded as an image.", None
-
-    if image_format not in SUPPORTED_IMAGE_FORMATS:
-        return False, "Please use JPG, JPEG, or PNG.", None
-
-    width, height = image.size
-    if width <= 0 or height <= 0:
-        return False, "This image has invalid dimensions.", None
-
-    return True, ui_text("image_ready"), ImageMeta(
-        data=raw,
-        filename=getattr(uploaded_file, "name", "camera_photo.jpg"),
-        mime_type=getattr(uploaded_file, "type", f"image/{image_format.lower()}"),
-        width=width,
-        height=height,
-        uploaded_at=datetime.now(ZoneInfo("Asia/Kolkata")).isoformat(timespec="seconds"),
-    )
+        image = Image.open(BytesIO(image_bytes)).convert("RGB")
+    except (UnidentifiedImageError, OSError) as exc:
+        raise ValueError("Please upload a valid JPG or PNG image.") from exc
+    return image_bytes, image
 
 
-def urgency_from_answers(answers: dict[str, str]) -> tuple[str, str]:
-    yes = ui_text("yes")
-    if answers.get("breathing") == yes:
-        return URGENCY_URGENT, "Facial swelling or breathing trouble needs urgent medical attention."
-    if answers.get("urgent") == yes:
-        return URGENCY_URGENT, "Fever, pus, severe pain, swelling, or rapidly spreading redness should be checked urgently."
-    return URGENCY_DERM, "Please visit a dermatologist soon if it spreads, hurts, forms pus, or does not improve."
+def predict_image(image: Image.Image) -> tuple[str, float, list[tuple[str, float]]]:
+    model, class_names = load_ai_model()
+    resized = image.resize(IMAGE_SIZE)
+    array = np.asarray(resized, dtype=np.float32)
+    batch = np.expand_dims(array, axis=0)
+    probabilities = model.predict(batch, verbose=0)[0]
+
+    if len(probabilities) != len(class_names):
+        raise ValueError("Model output count does not match class_names.json.")
+
+    top_indices = np.argsort(probabilities)[::-1][:3]
+    top_predictions = [(class_names[index], float(probabilities[index])) for index in top_indices]
+    return top_predictions[0][0], top_predictions[0][1], top_predictions
 
 
-# -----------------------------------------------------------------------------
-# 6. Model placeholder/interface
-# -----------------------------------------------------------------------------
+def choose_five_questions(top_predictions: list[tuple[str, float]]) -> list[str]:
+    _diseases, _all_questions, _profiles, question_groups = load_question_matrix()
+    selected: list[str] = []
 
-def real_model_exists() -> bool:
-    return any(path.exists() for path in MODEL_CANDIDATES)
+    for condition, _confidence in top_predictions:
+        for question in question_groups.get(condition, []):
+            if question not in selected:
+                selected.append(question)
+            if len(selected) == 5:
+                return selected
 
+    for question in question_groups.get("Universal", []):
+        if question not in selected:
+            selected.append(question)
+        if len(selected) == 5:
+            return selected
 
-def run_image_inference(image_bytes: bytes) -> InferenceResult:
-    """Structured model interface. Replace this body when a trained PyTorch model is added."""
-    if not real_model_exists():
-        return InferenceResult(
-            status="demo",
-            condition=None,
-            confidence=None,
-            explanation=ui_text("demo_mode"),
-            urgency=URGENCY_DERM,
-            urgency_message="The app can show the workflow, but the photo was not analyzed by a trained model.",
-            top_predictions=[],
-            needs_follow_up=True,
-            demo_mode=True,
-        )
-
-    logger.warning("Model file exists, but real PyTorch inference is not implemented in this MVP.")
-    return InferenceResult(
-        status="model_not_connected",
-        condition=None,
-        confidence=None,
-        explanation="A model file was found, but inference code has not been connected yet.",
-        urgency=URGENCY_DERM,
-        urgency_message="Connect the real PyTorch preprocessing and prediction code before using medical results.",
-        top_predictions=[],
-        needs_follow_up=True,
-        demo_mode=True,
-    )
+    fallback = [
+        "Has it been there for more than one week?",
+        "Is it itchy?",
+        "Is it painful?",
+        "Is it getting worse?",
+        "Did it start after working in seawater?",
+    ]
+    for question in fallback:
+        if question not in selected:
+            selected.append(question)
+        if len(selected) == 5:
+            break
+    return selected
 
 
-def choose_follow_up_questions(result: InferenceResult) -> list[str]:
-    if not result.needs_follow_up:
-        return []
-    return [ui_text("urgent_question"), ui_text("breathing_question")]
+def answer_match_score(answer: str, expected: str) -> float:
+    answer = answer.lower()
+    expected = expected.lower()
+    if answer == "i don't know":
+        return 0.45
+    if answer == expected:
+        return 1.0
+    if expected == "sometimes" and answer in {"yes", "sometimes"}:
+        return 0.75
+    if answer == "sometimes" and expected in {"yes", "sometimes"}:
+        return 0.65
+    return 0.0
 
 
-def final_result_from_followups(result: InferenceResult, answers: dict[str, str]) -> InferenceResult:
-    urgency, urgency_message = urgency_from_answers(answers)
-    return InferenceResult(
-        status=result.status,
-        condition=result.condition,
-        confidence=result.confidence,
-        explanation=result.explanation,
-        urgency=urgency,
-        urgency_message=urgency_message,
-        top_predictions=result.top_predictions,
-        needs_follow_up=False,
-        demo_mode=result.demo_mode,
-    )
+def combine_image_and_questions() -> Prediction:
+    image_prediction = st.session_state["image_prediction"]
+    top_predictions: list[tuple[str, float]] = image_prediction["top_predictions"]
+    answers: dict[str, str] = st.session_state["answers"]
+    _diseases, _questions, disease_profiles, _groups = load_question_matrix()
 
+    ranked: list[tuple[str, float, float]] = []
+    for condition, image_confidence in top_predictions:
+        profile = disease_profiles.get(condition, {})
+        scores = []
+        for question, answer in answers.items():
+            expected = profile.get(question, "Sometimes")
+            scores.append(answer_match_score(answer, expected))
+        question_score = sum(scores) / len(scores) if scores else 0.5
+        final_score = (0.72 * image_confidence) + (0.28 * question_score)
+        ranked.append((condition, image_confidence, final_score))
 
-# -----------------------------------------------------------------------------
-# 7. Navigation helpers
-# -----------------------------------------------------------------------------
+    ranked.sort(key=lambda item: item[2], reverse=True)
+    condition, image_confidence, final_score = ranked[0]
+    urgent_words = " ".join(f"{question} {answer}" for question, answer in answers.items()).lower()
 
-def navigate(screen: str) -> None:
-    if screen not in VALID_SCREENS:
-        st.session_state["screen"] = "home" if st.session_state.get("logged_in") else "language"
+    if condition == "Cellulitis" or ("painful" in urgent_words and "yes" in urgent_words and "getting worse" in urgent_words):
+        urgency = "Visit a dermatologist soon"
+        advice = "Please get this checked soon, especially if redness spreads, skin feels warm, pain increases, or fever appears."
+    elif condition in {"Impetigo", "Paronychia"}:
+        urgency = "See a doctor if it spreads or forms pus"
+        advice = "Keep the area clean and covered. Avoid sharing towels. See a doctor if fluid, pus, fever, or spreading redness appears."
     else:
-        st.session_state["screen"] = screen
-    st.rerun()
+        urgency = "Monitor and care at home, but see a dermatologist if it worsens"
+        advice = "Keep the area clean and dry. Avoid scratching. Seek care if it spreads, hurts, forms pus, or does not improve."
 
-
-def logout() -> None:
-    st.session_state.clear()
-    st.rerun()
-
-
-def top_nav(show_back: bool = False, back_to: str = "home", show_home: bool = True) -> None:
-    cols = st.columns([1, 1, 1])
-    with cols[0]:
-        if show_back and st.button(ui_text("back"), key=f"top_back_{back_to}", use_container_width=True):
-            navigate(back_to)
-    with cols[1]:
-        if show_home and st.button(ui_text("home"), key="top_home", use_container_width=True):
-            navigate("home")
-    with cols[2]:
-        if st.button(ui_text("logout"), key="top_logout", use_container_width=True):
-            logout()
-
-
-def attempt_login(name: str) -> tuple[bool, str]:
-    valid, cleaned, message = validate_name(name)
-    if not valid:
-        return False, message
-
-    st.session_state["logged_in"] = True
-    st.session_state["user_name"] = cleaned
-    st.session_state["screen"] = "language"
-
-    if not st.session_state.get("login_tracking_attempted"):
-        st.session_state["login_tracking_attempted"] = True
-        saved = append_login_to_sheet(cleaned)
-        st.session_state["login_tracking_saved"] = saved
-        if not saved:
-            st.session_state["login_tracking_warning"] = ui_text("tracking_failed")
-
-    return True, ""
-
-
-# -----------------------------------------------------------------------------
-# 8. Page-rendering functions
-# -----------------------------------------------------------------------------
-
-def login_page() -> None:
-    left, center, right = st.columns([1, 6, 1])
-    with center:
-        st.markdown('<div class="skinsense-logo">🩺</div>', unsafe_allow_html=True)
-        st.title("SkinSense")
-        st.write(ui_text("tagline"))
-        with st.container(border=True):
-            with st.form("login_form", clear_on_submit=False):
-                name = st.text_input(ui_text("name_label"), max_chars=MAX_NAME_LENGTH, key="login_name")
-                submitted = st.form_submit_button(ui_text("continue"), use_container_width=True)
-            if submitted:
-                with st.spinner("Opening SkinSense..."):
-                    ok, message = attempt_login(name)
-                if ok:
-                    st.rerun()
-                st.warning(message)
-        st.info(ui_text("disclaimer"))
-
-
-def language_page() -> None:
-    top_nav(show_home=False)
-    st.title(ui_text("choose_language"))
-    language = st.radio(
-        ui_text("choose_language"),
-        ["English", "हिंदी", "मराठी"],
-        index=["English", "हिंदी", "मराठी"].index(st.session_state.get("language", "English")),
-        horizontal=True,
-        label_visibility="collapsed",
+    return Prediction(
+        condition=condition,
+        image_confidence=image_confidence,
+        final_score=final_score,
+        top_predictions=top_predictions,
+        urgency=urgency,
+        advice=advice,
+        explanation=DISEASE_INFO.get(condition, "This result is based on the image model and your answers."),
     )
-    st.session_state["language"] = language
-    if st.session_state.get("login_tracking_warning"):
-        st.warning(st.session_state["login_tracking_warning"])
-    if st.button(ui_text("continue"), use_container_width=True):
-        navigate("home")
 
 
-def action_card(icon: str, title_key: str, help_key: str, destination: str) -> None:
-    with st.container(border=True):
-        cols = st.columns([1, 5])
-        with cols[0]:
-            st.header(icon)
-        with cols[1]:
-            st.subheader(ui_text(title_key))
-            st.write(ui_text(help_key))
-            if st.button(ui_text(title_key), key=f"go_{destination}", use_container_width=True):
-                navigate(destination)
+def start_page() -> None:
+    st.markdown("<div class='brand'>🩺</div>", unsafe_allow_html=True)
+    st.title("SkinSense")
+    st.write(t("tagline"))
 
+    with st.form("start_form"):
+        name = st.text_input(t("name"), max_chars=80)
+        language = st.radio(t("language"), ["English", "हिंदी", "मराठी"], horizontal=True)
+        submitted = st.form_submit_button(t("continue"), use_container_width=True)
 
-def home_page() -> None:
-    top_nav(show_home=False)
-    st.title(f"{ui_text('welcome')}, {st.session_state.get('user_name', '')}")
-    st.subheader(ui_text("home_title"))
-    if st.session_state.get("login_tracking_warning"):
-        st.warning(st.session_state["login_tracking_warning"])
-    action_card("🩺", "check_skin", "check_skin_help", "upload")
-    action_card("📈", "recovery", "recovery_help", "recovery")
-    action_card("💬", "chat", "chat_help", "chatbot")
+    if submitted:
+        cleaned = clean_name(name)
+        if not cleaned:
+            st.warning("Please enter your name.")
+            return
+        st.session_state["name"] = cleaned
+        st.session_state["language"] = language
+        go("upload")
+
+    st.info(t("disclaimer"))
 
 
 def upload_page() -> None:
-    top_nav(show_back=True, back_to="home")
-    st.markdown("<div class='step'>1 / 3</div>", unsafe_allow_html=True)
-    st.title(ui_text("upload_title"))
-    st.write(ui_text("upload_help"))
+    st.title(t("upload_title"))
+    st.write(t("upload_help"))
+    st.caption("No camera page is used. Upload from your gallery/files only.")
 
-    camera_tab, gallery_tab = st.tabs([ui_text("camera"), ui_text("gallery")])
-    selected_file = None
-    with camera_tab:
-        selected_file = st.camera_input(ui_text("camera"))
-    with gallery_tab:
-        gallery_file = st.file_uploader(ui_text("gallery"), type=["jpg", "jpeg", "png"])
-        selected_file = selected_file or gallery_file
+    uploaded_file = st.file_uploader("Upload image", type=["jpg", "jpeg", "png"], accept_multiple_files=False)
+    if uploaded_file is not None:
+        try:
+            image_bytes, image = validate_image(uploaded_file)
+        except ValueError as exc:
+            st.warning(str(exc))
+            return
 
-    if selected_file is not None:
-        valid, message, image_meta = validate_image(selected_file)
-        if valid and image_meta:
-            st.session_state["image_meta"] = image_meta
-            st.session_state["recovery_saved_current"] = False
-            st.success(message)
-        else:
-            st.warning(message)
+        st.session_state["image_bytes"] = image_bytes
+        st.session_state["image_name"] = uploaded_file.name
+        st.image(image_bytes, caption=uploaded_file.name, use_container_width=True)
 
-    image_meta: ImageMeta | None = st.session_state.get("image_meta")
-    if image_meta:
-        st.image(image_meta.data, caption=f"{image_meta.filename} · {image_meta.width}×{image_meta.height}")
-        if st.button(ui_text("run_check"), use_container_width=True):
-            with st.spinner("Preparing result..."):
-                result = run_image_inference(image_meta.data)
-            st.session_state["inference_result"] = result
-            questions = choose_follow_up_questions(result)
-            navigate("questions" if questions else "result")
+        if st.button("Analyze image", type="primary", use_container_width=True):
+            try:
+                with st.spinner("Checking image..."):
+                    condition, confidence, top_predictions = predict_image(image)
+                st.session_state["image_prediction"] = {
+                    "condition": condition,
+                    "confidence": confidence,
+                    "top_predictions": top_predictions,
+                }
+                st.session_state["question_list"] = choose_five_questions(top_predictions)
+                st.session_state["answers"] = {}
+                go("questions")
+            except Exception as exc:
+                st.error(str(exc))
+                st.info("If this says the model is missing, train in Colab and upload `skinsense_model.keras` and `class_names.json` beside app.py.")
+
+    if st.button("Back", use_container_width=True):
+        go("start")
 
 
 def questions_page() -> None:
-    top_nav(show_back=True, back_to="upload")
-    result: InferenceResult | None = st.session_state.get("inference_result")
-    if result is None:
-        st.warning("Please upload an image first.")
-        return
-    questions = choose_follow_up_questions(result)
-    st.markdown("<div class='step'>2 / 3</div>", unsafe_allow_html=True)
-    st.title(ui_text("questions_title"))
-    if result.demo_mode:
-        st.info(result.explanation)
+    if not st.session_state.get("image_prediction"):
+        go("upload")
 
-    with st.form("follow_up_form"):
-        urgent = st.radio(questions[0], [ui_text("yes"), ui_text("no")], horizontal=True, index=None)
-        breathing = st.radio(questions[1], [ui_text("yes"), ui_text("no")], horizontal=True, index=None)
-        submitted = st.form_submit_button(ui_text("see_result"), use_container_width=True)
+    st.title(t("questions_title"))
+    st.write("These questions help narrow the top image matches.")
+
+    with st.form("questions_form"):
+        answers: dict[str, str] = {}
+        for index, question in enumerate(st.session_state["question_list"], start=1):
+            answers[question] = st.radio(f"Q{index}. {question}", ANSWER_OPTIONS, horizontal=True, index=None)
+        submitted = st.form_submit_button("See result", type="primary", use_container_width=True)
+
     if submitted:
-        if urgent is None or breathing is None:
-            st.warning(ui_text("answer_all"))
+        if any(answer is None for answer in answers.values()):
+            st.warning("Please answer all 5 questions.")
             return
-        answers = {"urgent": urgent, "breathing": breathing}
-        st.session_state["followup_answers"] = answers
-        st.session_state["inference_result"] = final_result_from_followups(result, answers)
-        navigate("result")
+        st.session_state["answers"] = answers
+        st.session_state["final_prediction"] = combine_image_and_questions()
+        go("result")
 
-
-def urgency_box(urgency: str, message: str) -> None:
-    if urgency == URGENCY_URGENT:
-        st.error(f"{urgency}: {message}")
-    elif urgency == URGENCY_DERM:
-        st.warning(f"{urgency}: {message}")
-    else:
-        st.success(f"{urgency}: {message}")
-
-
-def save_current_to_recovery() -> None:
-    result: InferenceResult | None = st.session_state.get("inference_result")
-    image_meta: ImageMeta | None = st.session_state.get("image_meta")
-    if not result or not image_meta or st.session_state.get("recovery_saved_current"):
-        return
-    st.session_state["recovery_history"].append(
-        {
-            "timestamp": datetime.now(ZoneInfo("Asia/Kolkata")).isoformat(timespec="seconds"),
-            "image_bytes": image_meta.data,
-            "filename": image_meta.filename,
-            "condition": result.condition or "Demo mode: no condition predicted",
-            "summary": result.explanation,
-            "urgency": result.urgency,
-            "status": "",
-        }
-    )
-    st.session_state["recovery_saved_current"] = True
+    if st.button("Back to upload", use_container_width=True):
+        go("upload")
 
 
 def result_page() -> None:
-    top_nav(show_back=True, back_to="questions")
-    st.markdown("<div class='step'>3 / 3</div>", unsafe_allow_html=True)
-    st.title(ui_text("result_title"))
-    result: InferenceResult | None = st.session_state.get("inference_result")
-    image_meta: ImageMeta | None = st.session_state.get("image_meta")
-    if not result:
-        st.warning("No result is ready yet.")
-        return
-    if image_meta:
-        st.image(image_meta.data, caption=image_meta.filename)
+    prediction: Prediction | None = st.session_state.get("final_prediction")
+    if prediction is None:
+        go("questions")
 
-    with st.container(border=True):
-        st.subheader(ui_text("possible_condition"))
-        if result.condition:
-            st.write(result.condition)
-        else:
-            st.info(result.explanation)
-        if result.confidence is not None and not result.demo_mode:
-            st.progress(float(result.confidence))
-            st.write(f"{ui_text('confidence')}: {round(result.confidence * 100)}%")
-        st.write(result.explanation)
-        if result.top_predictions:
-            st.caption(ui_text("alternatives"))
-            for prediction in result.top_predictions[:3]:
-                st.write(f"- {prediction}")
+    st.title(t("result_title"))
+    if st.session_state.get("image_bytes"):
+        st.image(st.session_state["image_bytes"], caption=st.session_state.get("image_name", "Uploaded image"), use_container_width=True)
 
-    urgency_box(result.urgency, result.urgency_message)
-    st.info(ui_text("disclaimer"))
+    st.subheader(prediction.condition)
+    st.write(prediction.explanation)
+    st.metric("Image model confidence", f"{prediction.image_confidence * 100:.0f}%")
+    st.metric("Final screening score", f"{prediction.final_score * 100:.0f}%")
 
-    cols = st.columns(3)
-    with cols[0]:
-        if st.button(ui_text("save_recovery"), key="result_save_recovery", use_container_width=True):
-            save_current_to_recovery()
-            st.success(ui_text("saved_recovery"))
-    with cols[1]:
-        if st.button(ui_text("check_another"), key="result_check_another", use_container_width=True):
-            st.session_state["image_meta"] = None
-            st.session_state["inference_result"] = None
-            st.session_state["followup_answers"] = {}
-            navigate("upload")
-    with cols[2]:
-        if st.button(ui_text("home"), key="result_bottom_home", use_container_width=True):
-            navigate("home")
+    st.warning(f"{prediction.urgency}: {prediction.advice}")
 
+    st.write("Top image matches:")
+    for condition, confidence in prediction.top_predictions:
+        st.write(f"- {condition}: {confidence * 100:.0f}%")
 
-def recovery_page() -> None:
-    top_nav(show_back=True, back_to="home")
-    st.title(ui_text("recovery"))
-    st.info(ui_text("comparison_note"))
-    history = st.session_state.get("recovery_history", [])
-    if not history:
-        st.info(ui_text("no_history"))
-        return
+    st.info(t("disclaimer"))
 
-    for index, record in enumerate(reversed(history), start=1):
-        with st.container(border=True):
-            st.subheader(f"{index}. {record['condition']}")
-            st.write(record["timestamp"])
-            st.image(record["image_bytes"], width=260)
-            st.write(record["summary"])
-            urgency_box(record["urgency"], "")
-            status = st.radio(
-                ui_text("status_label"),
-                [ui_text("improving"), ui_text("unchanged"), ui_text("worsening")],
-                horizontal=True,
-                key=f"recovery_status_{index}",
-                index=None,
-            )
-            if status:
-                record["status"] = status
-
-
-def urgent_chat_message(message: str) -> bool:
-    lowered = message.lower()
-    terms = ("pain", "pus", "fever", "swelling", "spreading", "bleeding", "breathing", "severe")
-    return any(term in lowered for term in terms)
-
-
-def answer_chat(message: str) -> str:
-    if urgent_chat_message(message):
-        return "Please seek medical help soon for pain, pus, fever, swelling, rapid spreading, bleeding, or breathing trouble. I cannot diagnose through chat."
-    lowered = message.lower()
-    if "sea" in lowered or "salt" in lowered or "water" in lowered:
-        return "After seawater work, rinse with clean water, dry the skin well, and change wet gloves or boots."
-    if "itch" in lowered:
-        return "Avoid scratching. Wash gently, dry well, and see a dermatologist if itching continues or spreads."
-    if "sun" in lowered:
-        return "Use shade, protective clothing, and sunscreen when possible. Seek care for blisters or severe pain."
-    return "I can share general skin-care guidance, but I cannot diagnose. Please see a dermatologist if symptoms worsen."
-
-
-def chatbot_page() -> None:
-    top_nav(show_back=True, back_to="home")
-    st.title(ui_text("chat_title"))
-    st.info(ui_text("disclaimer"))
-    for role, message in st.session_state["chat_history"]:
-        with st.chat_message(role):
-            st.write(message)
-
-    prompt = st.chat_input(ui_text("chat_placeholder"))
-    if prompt is not None:
-        cleaned = prompt.strip()
-        if cleaned:
-            st.session_state["chat_history"].append(("user", cleaned))
-            st.session_state["chat_history"].append(("assistant", answer_chat(cleaned)))
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Check another image", type="primary", use_container_width=True):
+            st.session_state["image_bytes"] = None
+            st.session_state["image_prediction"] = None
+            st.session_state["final_prediction"] = None
+            go("upload")
+    with col2:
+        if st.button("Start over", use_container_width=True):
+            st.session_state.clear()
             st.rerun()
-        st.warning("Please type a question.")
 
-    if st.button(ui_text("clear_chat"), use_container_width=True):
-        st.session_state["chat_history"] = []
-        st.rerun()
-
-
-# -----------------------------------------------------------------------------
-# 9. Main router
-# -----------------------------------------------------------------------------
 
 def main() -> None:
     init_state()
-    apply_css()
-    if not st.session_state.get("logged_in"):
-        login_page()
-        return
+    css()
+    page = st.session_state.get("page", "start")
+    if page not in VALID_PAGES:
+        page = "start"
 
-    screen = st.session_state.get("screen", "language")
-    if screen not in VALID_SCREENS:
-        st.session_state["screen"] = "home"
-        st.rerun()
-
-    pages = {
-        "language": language_page,
-        "home": home_page,
-        "upload": upload_page,
-        "questions": questions_page,
-        "result": result_page,
-        "recovery": recovery_page,
-        "chatbot": chatbot_page,
-    }
-    pages[st.session_state["screen"]]()
+    if page == "start":
+        start_page()
+    elif page == "upload":
+        upload_page()
+    elif page == "questions":
+        questions_page()
+    elif page == "result":
+        result_page()
 
 
 if __name__ == "__main__":
