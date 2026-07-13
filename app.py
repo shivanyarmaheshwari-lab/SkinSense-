@@ -1037,5 +1037,5 @@ def main() -> None:
     screen = st.session_state.get("screen", "start")
     pages.get(screen, start_page)()
 
-
-if __name__ =
+if __name__ == "__main__":
+    main()
