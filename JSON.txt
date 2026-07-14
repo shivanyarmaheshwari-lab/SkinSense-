@@ -1,5 +1,3 @@
-2309f8b6096a6d7cab607672c39f7c3ab18e8280
-
 google_sheet_id = "1VCwoQWGVI-9y7m9WGlWQlM4nSZ4Hs0F6TqexuuMYbPU"
 
 [gcp_service_account]
@@ -33,9 +31,8 @@ ASEIyKH8NSrJBnr4g82D1SwPKkDGRKpAM+TGdvCfAoGAWXy72NcGUR/p5C4NRyyV
 SIRNCptJEBtNiWXLuO4+bldgfumE+uDHFwtYK4FLj5Av5Yi4rJd1NldKNJynTVEM
 xdqQkptOEyKpdWa1V2485Jefe3CHR91jO+FfFnsPjOgSqx/oTDZ/kmxnJ/1/ddlA
 m8QQWhr8rnNvyvRA16hfZSQ=
------END PRIVATE KEY-----
-"""
-client_email = "[skinsense@skinsense-502014.iam.gserviceaccount.com](mailto:skinsense@skinsense-502014.iam.gserviceaccount.com)"
+-----END PRIVATE KEY-----"""
+client_email = "skinsense@skinsense-502014.iam.gserviceaccount.com"
 client_id = "109028710503644879463"
 auth_uri = "https://accounts.google.com/o/oauth2/auth"
 token_uri = "https://oauth2.googleapis.com/token"
