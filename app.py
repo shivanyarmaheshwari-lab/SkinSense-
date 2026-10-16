@@ -140,6 +140,7 @@ TEXT = {
         "care_help": "Enter an area, landmark, or address to search for nearby dermatology care.",
         "location_label": "Your area or address",
         "open_maps": "Open in Google Maps",
+        "search": "Search",
         "care_note": "Results are provided by Google Maps. Check the clinic details before visiting.",
     },
     "हिंदी": {
@@ -203,6 +204,7 @@ TEXT = {
         "care_help": "पास की त्वचा देखभाल के लिए क्षेत्र, लैंडमार्क या पता लिखें.",
         "location_label": "अपना क्षेत्र या पता लिखें",
         "open_maps": "Google Maps में खोलें",
+        "search": "खोजें",
         "care_note": "परिणाम Google Maps से दिए गए हैं. जाने से पहले क्लिनिक की जानकारी जांचें.",
     },
     "मराठी": {
@@ -266,6 +268,7 @@ TEXT = {
         "care_help": "जवळची त्वचा काळजी सेवा शोधण्यासाठी परिसर, लँडमार्क किंवा पत्ता लिहा.",
         "location_label": "तुमचा परिसर किंवा पत्ता",
         "open_maps": "Google Maps मध्ये उघडा",
+        "search": "शोधा",
         "care_note": "परिणाम Google Maps वरून दिले आहेत. जाण्यापूर्वी क्लिनिकची माहिती तपासा.",
     },
 }
@@ -507,13 +510,13 @@ def apply_css() -> None:
         }
         h1, h2, h3, h4 { color: var(--skinsense-navy); letter-spacing: -0.02em; }
         h1, h2 { text-align: center; }
-        h1 { font-size: clamp(2rem, 5vw, 2.65rem); line-height: 1.08; margin: 0.45rem 0 0.7rem; }
+        h1 { font-size: clamp(1.8rem, 4.5vw, 2.25rem); line-height: 1.1; margin: 0.35rem 0 0.55rem; }
         h2 { font-size: clamp(1.45rem, 4vw, 2rem); line-height: 1.2; }
         h3 { font-size: 1.12rem; }
         p, li, label { color: var(--skinsense-navy) !important; }
         .stCaption, .muted { color: var(--skinsense-grey) !important; }
-        .stButton > button, .stFormSubmitButton > button {
-            min-height: 2.65rem;
+        .stButton > button {
+            min-height: 2.25rem;
             border-radius: 10px;
             border: 1px solid var(--skinsense-blue);
             background: var(--skinsense-blue);
@@ -521,6 +524,7 @@ def apply_css() -> None:
             font-weight: 700;
             transition: background 120ms ease, border-color 120ms ease;
         }
+        .stFormSubmitButton > button { min-height: 2.65rem; }
         .stButton > button:hover, .stFormSubmitButton > button:hover {
             background: var(--skinsense-blue-dark);
             border-color: var(--skinsense-blue-dark);
@@ -542,6 +546,7 @@ def apply_css() -> None:
         .stCheckbox label, .stFileUploader label, .stSelectbox label {
             color: var(--skinsense-navy) !important;
         }
+        .stTextInput label p, .stRadio label p { font-size: 1rem !important; font-weight: 700; }
         .stRadio [role="radiogroup"] label p,
         .stRadio [role="radiogroup"] label span {
             color: var(--skinsense-navy) !important;
@@ -622,7 +627,8 @@ def apply_css() -> None:
             .skinsense-logo-image { width: 3rem; height: 3rem; }
             h1 { font-size: 2.15rem; }
             h2 { font-size: 1.6rem; }
-            .stButton > button, .stFormSubmitButton > button { min-height: 3.1rem; }
+            .stButton > button { min-height: 2.2rem; }
+            .stFormSubmitButton > button { min-height: 2.65rem; }
         }
         .result-heading {
             color: var(--skinsense-grey);
@@ -882,9 +888,8 @@ def language_page() -> None:
         navigate("home")
 
 
-def action_card(icon: str, title_key: str, help_key: str, destination: str) -> None:
+def action_card(title_key: str, help_key: str, destination: str) -> None:
     with st.container(border=True):
-        st.markdown(f'<div class="action-icon">{icon}</div>', unsafe_allow_html=True)
         st.subheader(ui_text(title_key))
         st.caption(ui_text(help_key))
         if st.button(ui_text(title_key), key=f"go_{destination}", use_container_width=True):
@@ -915,8 +920,8 @@ def home_page() -> None:
     voice_controls()
     if st.session_state.get("submission_tracking_warning"):
         st.warning(st.session_state["submission_tracking_warning"])
-    action_card("🩺", "check_skin", "check_skin_help", "upload")
-    action_card("⌖", "find_care", "find_care_help", "care")
+    action_card("check_skin", "check_skin_help", "upload")
+    action_card("find_care", "find_care_help", "care")
 
 
 def care_page() -> None:
@@ -926,13 +931,19 @@ def care_page() -> None:
     st.title(ui_text("care_title"))
     st.markdown(f'<div class="page-intro">{ui_text("care_help")}</div>', unsafe_allow_html=True)
 
-    location = st.text_input(ui_text("location_label"), key="care_location")
+    with st.form("care_search_form", clear_on_submit=False):
+        location = st.text_input(ui_text("location_label"), key="care_location")
+        search = st.form_submit_button(ui_text("search"), use_container_width=True)
+
+    if search and not location.strip():
+        st.warning("Please enter an area, landmark, or address first.")
     if location.strip():
-        maps_query = quote_plus(f"dermatologist public hospital skin clinic near {location.strip()}")
-        st.link_button(ui_text("open_maps"), f"https://www.google.com/maps/search/?api=1&query={maps_query}", use_container_width=True)
+        maps_query = quote_plus(
+            f"dermatologist OR dermatology clinic OR skin hospital near {location.strip()}"
+        )
+        maps_url = f"https://www.google.com/maps/search/?api=1&query={maps_query}"
+        st.link_button(ui_text("open_maps"), maps_url, use_container_width=True)
         st.info(ui_text("care_note"))
-    else:
-        st.caption("Enter a location to open a focused search.")
 
     if st.button(ui_text("check_skin"), key="care_check_skin", use_container_width=True):
         navigate("upload")
