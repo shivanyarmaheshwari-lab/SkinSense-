@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+from urllib.parse import quote_plus
 from dataclasses import dataclass
 from datetime import datetime
 from io import BytesIO
@@ -44,7 +45,7 @@ SHEET_HEADERS = (
 MAX_NAME_LENGTH = 80
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 SUPPORTED_IMAGE_FORMATS = {"JPEG", "PNG"}
-VALID_SCREENS = {"language", "home", "upload", "questions", "result", "recovery", "chatbot"}
+VALID_SCREENS = {"language", "home", "upload", "questions", "result", "recovery", "chatbot", "care"}
 
 MODEL_CANDIDATES = (
     BASE_DIR / "skinsense_model.pt",
@@ -128,6 +129,16 @@ TEXT = {
         "chat_title": "Ask about skin care",
         "chat_placeholder": "Type your question...",
         "clear_chat": "Clear chat",
+        "listen": "Listen",
+        "speak": "Speak",
+        "say": "Say a command",
+        "find_care": "Find a dermatologist",
+        "find_care_help": "Find skin-care support near your location.",
+        "care_title": "Find a dermatologist near you",
+        "care_help": "Enter an area, landmark, or address to search for nearby dermatology care.",
+        "location_label": "Your area or address",
+        "open_maps": "Open in Google Maps",
+        "care_note": "Results are provided by Google Maps. Check the clinic details before visiting.",
     },
     "हिंदी": {
         "tagline": "मछुआरा समुदायों के लिए AI त्वचा स्क्रीनिंग सहायता.",
@@ -181,6 +192,16 @@ TEXT = {
         "chat_title": "त्वचा देखभाल पूछें",
         "chat_placeholder": "अपना सवाल लिखें...",
         "clear_chat": "चैट साफ करें",
+        "listen": "सुनें",
+        "speak": "बोलें",
+        "say": "कमांड बोलें",
+        "find_care": "त्वचा डॉक्टर खोजें",
+        "find_care_help": "अपने स्थान के पास त्वचा देखभाल सहायता खोजें.",
+        "care_title": "अपने पास त्वचा डॉक्टर खोजें",
+        "care_help": "पास की त्वचा देखभाल के लिए क्षेत्र, लैंडमार्क या पता लिखें.",
+        "location_label": "अपना क्षेत्र या पता लिखें",
+        "open_maps": "Google Maps में खोलें",
+        "care_note": "परिणाम Google Maps से दिए गए हैं. जाने से पहले क्लिनिक की जानकारी जांचें.",
     },
     "मराठी": {
         "tagline": "मच्छीमार समुदायांसाठी AI त्वचा स्क्रीनिंग मदत.",
@@ -234,6 +255,16 @@ TEXT = {
         "chat_title": "त्वचा काळजी विचारा",
         "chat_placeholder": "तुमचा प्रश्न लिहा...",
         "clear_chat": "चॅट साफ करा",
+        "listen": "ऐका",
+        "speak": "बोला",
+        "say": "आदेश बोला",
+        "find_care": "त्वचा डॉक्टर शोधा",
+        "find_care_help": "तुमच्या ठिकाणाजवळ त्वचेची काळजी घेणारी मदत शोधा.",
+        "care_title": "तुमच्या जवळ त्वचा डॉक्टर शोधा",
+        "care_help": "जवळची त्वचा काळजी सेवा शोधण्यासाठी परिसर, लँडमार्क किंवा पत्ता लिहा.",
+        "location_label": "तुमचा परिसर किंवा पत्ता",
+        "open_maps": "Google Maps मध्ये उघडा",
+        "care_note": "परिणाम Google Maps वरून दिले आहेत. जाण्यापूर्वी क्लिनिकची माहिती तपासा.",
     },
 }
 
@@ -453,13 +484,13 @@ def apply_css() -> None:
         """
         <style>
         :root {
-            --skinsense-bg: #f4f8fb;
+            --skinsense-bg: #f5faf8;
             --skinsense-surface: #ffffff;
             --skinsense-navy: #102a43;
-            --skinsense-blue: #176fae;
-            --skinsense-blue-dark: #105b8f;
-            --skinsense-pale: #e8f3fa;
-            --skinsense-border: #d8e4ed;
+            --skinsense-blue: #287f6c;
+            --skinsense-blue-dark: #1f6657;
+            --skinsense-pale: #e8f5f0;
+            --skinsense-border: #cfe3dc;
             --skinsense-grey: #526a80;
         }
         .stApp { background: var(--skinsense-bg); }
@@ -695,7 +726,7 @@ def logout() -> None:
 
 def top_nav(show_back: bool = False, back_to: str = "home", show_home: bool = True) -> None:
     st.markdown(
-        '<div class="skinsense-brand"><div class="skinsense-logo">🩺</div>'
+        '<div class="skinsense-brand"><div class="skinsense-logo">✚</div>'
         '<div class="skinsense-brand-name">SkinSense</div></div>',
         unsafe_allow_html=True,
     )
@@ -718,7 +749,7 @@ def attempt_login(name: str) -> tuple[bool, str]:
 
     st.session_state["logged_in"] = True
     st.session_state["user_name"] = cleaned
-    st.session_state["screen"] = "language"
+    st.session_state["screen"] = "home"
 
     return True, ""
 
@@ -731,7 +762,7 @@ def login_page() -> None:
     left, center, right = st.columns([1, 6, 1])
     with center:
         st.markdown(
-            '<div class="skinsense-brand"><div class="skinsense-logo">🩺</div>'
+            '<div class="skinsense-brand"><div class="skinsense-logo">✚</div>'
             '<div class="skinsense-brand-name">SkinSense</div></div>',
             unsafe_allow_html=True,
         )
@@ -739,9 +770,18 @@ def login_page() -> None:
         st.markdown(f'<div class="page-intro">{ui_text("tagline")}</div>', unsafe_allow_html=True)
         with st.container(border=True):
             with st.form("login_form", clear_on_submit=False):
+                language = st.radio(
+                    ui_text("choose_language"),
+                    ["English", "हिंदी", "मराठी"],
+                    index=["English", "हिंदी", "मराठी"].index(
+                        st.session_state.get("language", "English")
+                    ),
+                    horizontal=True,
+                )
                 name = st.text_input(ui_text("name_label"), max_chars=MAX_NAME_LENGTH, key="login_name")
                 submitted = st.form_submit_button(ui_text("continue"), use_container_width=True)
             if submitted:
+                st.session_state["language"] = language
                 with st.spinner("Opening SkinSense..."):
                     ok, message = attempt_login(name)
                 if ok:
@@ -777,15 +817,50 @@ def action_card(icon: str, title_key: str, help_key: str, destination: str) -> N
             navigate(destination)
 
 
+def voice_controls() -> None:
+    """Render the three voice controls used by the home screen."""
+    voice_columns = st.columns(3)
+    controls = (
+        ("listen", "voice_listen", "Listening controls are ready."),
+        ("speak", "voice_speak", "Speak your request using your device microphone."),
+        ("say", "voice_say", "Say a command such as check my skin or find a dermatologist."),
+    )
+    for column, (label_key, button_key, message) in zip(voice_columns, controls):
+        with column:
+            if st.button(ui_text(label_key), key=button_key, use_container_width=True):
+                st.session_state["voice_status"] = message
+    if st.session_state.get("voice_status"):
+        st.caption(st.session_state["voice_status"])
+
+
 def home_page() -> None:
     top_nav(show_home=False)
     st.title(f"{ui_text('welcome')}, {st.session_state.get('user_name', '')}")
     st.markdown(f'<div class="page-intro">{ui_text("home_title")}</div>', unsafe_allow_html=True)
+    voice_controls()
     if st.session_state.get("submission_tracking_warning"):
         st.warning(st.session_state["submission_tracking_warning"])
     action_card("🩺", "check_skin", "check_skin_help", "upload")
-    action_card("📈", "recovery", "recovery_help", "recovery")
-    action_card("💬", "chat", "chat_help", "chatbot")
+    action_card("⌖", "find_care", "find_care_help", "care")
+
+
+def care_page() -> None:
+    """Open a location-specific Google Maps search without a facilities list."""
+    top_nav(show_back=True, back_to="home")
+    st.markdown("<div class='step'>Care finder</div>", unsafe_allow_html=True)
+    st.title(ui_text("care_title"))
+    st.markdown(f'<div class="page-intro">{ui_text("care_help")}</div>', unsafe_allow_html=True)
+
+    location = st.text_input(ui_text("location_label"), key="care_location")
+    if location.strip():
+        maps_query = quote_plus(f"dermatologist public hospital skin clinic near {location.strip()}")
+        st.link_button(ui_text("open_maps"), f"https://www.google.com/maps/search/?api=1&query={maps_query}", use_container_width=True)
+        st.info(ui_text("care_note"))
+    else:
+        st.caption("Enter a location to open a focused search.")
+
+    if st.button(ui_text("check_skin"), key="care_check_skin", use_container_width=True):
+        navigate("upload")
 
 
 def upload_page() -> None:
@@ -1035,6 +1110,7 @@ def main() -> None:
         "result": result_page,
         "recovery": recovery_page,
         "chatbot": chatbot_page,
+        "care": care_page,
     }
     pages[st.session_state["screen"]]()
 
