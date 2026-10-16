@@ -501,18 +501,19 @@ def apply_css() -> None:
         }
         .stApp { background: var(--skinsense-bg); }
         .block-container {
-            max-width: 620px;
-            padding-top: 0.75rem;
-            padding-bottom: 3rem;
+            max-width: 560px;
+            padding-top: 0.35rem;
+            padding-bottom: 1.5rem;
         }
         h1, h2, h3, h4 { color: var(--skinsense-navy); letter-spacing: -0.02em; }
-        h1 { font-size: clamp(2rem, 5vw, 2.65rem); line-height: 1.1; }
+        h1, h2 { text-align: center; }
+        h1 { font-size: clamp(2rem, 5vw, 2.65rem); line-height: 1.08; margin: 0.45rem 0 0.7rem; }
         h2 { font-size: clamp(1.45rem, 4vw, 2rem); line-height: 1.2; }
         h3 { font-size: 1.12rem; }
         p, li, label { color: var(--skinsense-navy) !important; }
         .stCaption, .muted { color: var(--skinsense-grey) !important; }
         .stButton > button, .stFormSubmitButton > button {
-            min-height: 2.75rem;
+            min-height: 2.65rem;
             border-radius: 10px;
             border: 1px solid var(--skinsense-blue);
             background: var(--skinsense-blue);
@@ -552,8 +553,8 @@ def apply_css() -> None:
             display: flex;
             align-items: center;
             gap: 0.7rem;
-            padding: 0.2rem 0 0.8rem;
-            margin-bottom: 1.3rem;
+            padding: 0.1rem 0 0.45rem;
+            margin-bottom: 0.8rem;
             border-bottom: 1px solid var(--skinsense-border);
         }
         .skinsense-logo {
@@ -593,7 +594,9 @@ def apply_css() -> None:
             color: var(--skinsense-grey);
             font-size: 1rem;
             line-height: 1.55;
-            margin-top: -0.35rem;
+            margin: 0 auto 0.9rem;
+            max-width: 510px;
+            text-align: center;
         }
         .action-icon {
             width: 3.1rem;
@@ -605,15 +608,16 @@ def apply_css() -> None:
             background: var(--skinsense-pale);
             color: var(--skinsense-blue);
             font-size: 1.35rem;
-            margin-bottom: 0.65rem;
+            margin: 0 auto 0.35rem;
         }
+        .stCaption { line-height: 1.35; }
         .privacy-copy {
             color: var(--skinsense-navy);
             line-height: 1.55;
             font-size: 0.96rem;
         }
         @media (max-width: 640px) {
-            .block-container { padding-left: 1rem; padding-right: 1rem; }
+            .block-container { padding-left: 0.8rem; padding-right: 0.8rem; }
             .skinsense-brand-name { font-size: 1rem; }
             .skinsense-logo-image { width: 3rem; height: 3rem; }
             h1 { font-size: 2.15rem; }
@@ -768,7 +772,7 @@ def logout() -> None:
 
 
 def top_nav(show_back: bool = False, back_to: str = "home", show_home: bool = True) -> None:
-    header = st.columns([0.75, 4.5, 2.2])
+    header = st.columns([0.75, 4.5, 2.2], gap="small")
     with header[0]:
         if (BASE_DIR / "skinsense_logo.png").exists():
             st.image(str(BASE_DIR / "skinsense_logo.png"), width=58)
@@ -813,7 +817,7 @@ def attempt_login(name: str) -> tuple[bool, str]:
 # -----------------------------------------------------------------------------
 
 def login_page() -> None:
-    header = st.columns([0.75, 4.5, 2.2])
+    header = st.columns([0.75, 4.5, 2.2], gap="small")
     with header[0]:
         if (BASE_DIR / "skinsense_logo.png").exists():
             st.image(str(BASE_DIR / "skinsense_logo.png"), width=62)
@@ -889,7 +893,7 @@ def action_card(icon: str, title_key: str, help_key: str, destination: str) -> N
 
 def voice_controls() -> None:
     """Render reliable native voice controls with visible status feedback."""
-    voice_columns = st.columns(2)
+    voice_columns = st.columns(2, gap="small")
     controls = (
         ("🔊  Listen", "voice_listen", "Screen reading is ready on your device."),
         ("🎙️  Speak", "voice_speak", "Use your device microphone to speak a request."),
