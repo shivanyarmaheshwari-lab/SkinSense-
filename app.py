@@ -494,40 +494,58 @@ def apply_css() -> None:
             --skinsense-pale: #e8f2ff;
             --skinsense-border: #c5dced;
             --skinsense-grey: #526a80;
+            color-scheme: light;
+        }
+        .stApp, .stApp p, .stApp label, .stApp span, .stApp div {
+            color: var(--skinsense-navy);
         }
         .stApp { background: var(--skinsense-bg); }
         .block-container {
-            max-width: 900px;
-            padding-top: 1rem;
+            max-width: 620px;
+            padding-top: 0.75rem;
             padding-bottom: 3rem;
         }
         h1, h2, h3, h4 { color: var(--skinsense-navy); letter-spacing: -0.02em; }
         h1 { font-size: clamp(2rem, 5vw, 2.65rem); line-height: 1.1; }
         h2 { font-size: clamp(1.45rem, 4vw, 2rem); line-height: 1.2; }
         h3 { font-size: 1.12rem; }
-        p, li, label { color: var(--skinsense-navy); }
+        p, li, label { color: var(--skinsense-navy) !important; }
         .stCaption, .muted { color: var(--skinsense-grey) !important; }
         .stButton > button, .stFormSubmitButton > button {
             min-height: 2.75rem;
             border-radius: 10px;
             border: 1px solid var(--skinsense-blue);
             background: var(--skinsense-blue);
-            color: #ffffff;
+            color: #ffffff !important;
             font-weight: 700;
             transition: background 120ms ease, border-color 120ms ease;
         }
         .stButton > button:hover, .stFormSubmitButton > button:hover {
             background: var(--skinsense-blue-dark);
             border-color: var(--skinsense-blue-dark);
-            color: #ffffff;
+            color: #ffffff !important;
         }
-        .stTextInput input, .stTextArea textarea {
+        .stTextInput input, .stTextArea textarea, input, textarea {
             border: 1px solid var(--skinsense-border);
             border-radius: 10px;
             background: var(--skinsense-surface);
-            color: var(--skinsense-navy);
+            color: var(--skinsense-navy) !important;
+            -webkit-text-fill-color: var(--skinsense-navy) !important;
+            caret-color: var(--skinsense-navy);
         }
-        .stRadio label, .stCheckbox label { color: var(--skinsense-navy) !important; }
+        input::placeholder, textarea::placeholder {
+            color: #7389a0 !important;
+            opacity: 1 !important;
+        }
+        .stTextInput label, .stTextArea label, .stRadio label,
+        .stCheckbox label, .stFileUploader label, .stSelectbox label {
+            color: var(--skinsense-navy) !important;
+        }
+        .stRadio [role="radiogroup"] label p,
+        .stRadio [role="radiogroup"] label span {
+            color: var(--skinsense-navy) !important;
+        }
+        .stAlert p, .stAlert div, .stAlert span { color: var(--skinsense-navy) !important; }
         .stTabs [role="tab"] { color: var(--skinsense-grey); font-weight: 650; }
         .stTabs [aria-selected="true"] { color: var(--skinsense-blue); }
         .skinsense-brand {
@@ -561,6 +579,8 @@ def apply_css() -> None:
             font-size: 1.15rem;
             font-weight: 800;
         }
+        .stDivider { border-color: var(--skinsense-border) !important; }
+        .stProgress > div > div { background: var(--skinsense-blue); }
         .step {
             color: var(--skinsense-blue);
             font-weight: 700;
@@ -596,6 +616,9 @@ def apply_css() -> None:
             .block-container { padding-left: 1rem; padding-right: 1rem; }
             .skinsense-brand-name { font-size: 1rem; }
             .skinsense-logo-image { width: 3rem; height: 3rem; }
+            h1 { font-size: 2.15rem; }
+            h2 { font-size: 1.6rem; }
+            .stButton > button, .stFormSubmitButton > button { min-height: 3.1rem; }
         }
         .result-heading {
             color: var(--skinsense-grey);
@@ -757,16 +780,20 @@ def top_nav(show_back: bool = False, back_to: str = "home", show_home: bool = Tr
         st.caption(f"◉ {ui_text('choose_language')}")
     st.divider()
 
-    cols = st.columns([1, 1, 1])
+    cols = st.columns([1, 1])
     with cols[0]:
         if show_back and st.button(ui_text("back"), key=f"top_back_{back_to}", use_container_width=True):
             navigate(back_to)
     with cols[1]:
         if show_home and st.button(ui_text("home"), key="top_home", use_container_width=True):
             navigate("home")
-    with cols[2]:
-        if st.button(ui_text("logout"), key="top_logout", use_container_width=True):
-            logout()
+
+
+def bottom_logout() -> None:
+    """Keep logout visible without competing with the mobile header."""
+    st.divider()
+    if st.button(ui_text("logout"), key="bottom_logout", use_container_width=True):
+        logout()
 
 
 def attempt_login(name: str) -> tuple[bool, str]:
@@ -1157,6 +1184,7 @@ def main() -> None:
         "care": care_page,
     }
     pages[st.session_state["screen"]]()
+    bottom_logout()
 
 
 if __name__ == "__main__":
