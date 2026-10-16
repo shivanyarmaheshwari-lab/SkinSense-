@@ -48,6 +48,8 @@ SUPPORTED_IMAGE_FORMATS = {"JPEG", "PNG"}
 VALID_SCREENS = {"language", "home", "upload", "questions", "result", "recovery", "chatbot", "care"}
 
 MODEL_CANDIDATES = (
+    BASE_DIR / "skinsense_model.keras",
+    BASE_DIR / "model.keras",
     BASE_DIR / "skinsense_model.pt",
     BASE_DIR / "skinsense_model.pth",
     BASE_DIR / "model.pt",
@@ -484,19 +486,19 @@ def apply_css() -> None:
         """
         <style>
         :root {
-            --skinsense-bg: #f5faf8;
+            --skinsense-bg: #edf8fc;
             --skinsense-surface: #ffffff;
             --skinsense-navy: #102a43;
-            --skinsense-blue: #287f6c;
-            --skinsense-blue-dark: #1f6657;
-            --skinsense-pale: #e8f5f0;
-            --skinsense-border: #cfe3dc;
+            --skinsense-blue: #2474d8;
+            --skinsense-blue-dark: #185bb5;
+            --skinsense-pale: #e8f2ff;
+            --skinsense-border: #c5dced;
             --skinsense-grey: #526a80;
         }
         .stApp { background: var(--skinsense-bg); }
         .block-container {
-            max-width: 780px;
-            padding-top: 2rem;
+            max-width: 900px;
+            padding-top: 1rem;
             padding-bottom: 3rem;
         }
         h1, h2, h3, h4 { color: var(--skinsense-navy); letter-spacing: -0.02em; }
@@ -532,19 +534,27 @@ def apply_css() -> None:
             display: flex;
             align-items: center;
             gap: 0.7rem;
-            margin-bottom: 0.85rem;
+            padding: 0.2rem 0 0.8rem;
+            margin-bottom: 1.3rem;
+            border-bottom: 1px solid var(--skinsense-border);
         }
         .skinsense-logo {
             width: 3.1rem;
             height: 3.1rem;
             border-radius: 999px;
-            background: var(--skinsense-blue);
-            color: white;
+            background: transparent;
+            color: var(--skinsense-navy);
             display: inline-flex;
             align-items: center;
             justify-content: center;
             font-size: 1.45rem;
             flex: 0 0 auto;
+        }
+        .skinsense-logo-image {
+            width: 3.8rem;
+            height: 3.8rem;
+            object-fit: contain;
+            border-radius: 999px;
         }
         .skinsense-brand-name {
             color: var(--skinsense-navy);
@@ -566,8 +576,8 @@ def apply_css() -> None:
             margin-top: -0.35rem;
         }
         .action-icon {
-            width: 2.8rem;
-            height: 2.8rem;
+            width: 3.1rem;
+            height: 3.1rem;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -576,6 +586,16 @@ def apply_css() -> None:
             color: var(--skinsense-blue);
             font-size: 1.35rem;
             margin-bottom: 0.65rem;
+        }
+        .privacy-copy {
+            color: var(--skinsense-navy);
+            line-height: 1.55;
+            font-size: 0.96rem;
+        }
+        @media (max-width: 640px) {
+            .block-container { padding-left: 1rem; padding-right: 1rem; }
+            .skinsense-brand-name { font-size: 1rem; }
+            .skinsense-logo-image { width: 3rem; height: 3rem; }
         }
         .result-heading {
             color: var(--skinsense-grey);
@@ -725,11 +745,18 @@ def logout() -> None:
 
 
 def top_nav(show_back: bool = False, back_to: str = "home", show_home: bool = True) -> None:
-    st.markdown(
-        '<div class="skinsense-brand"><div class="skinsense-logo">✚</div>'
-        '<div class="skinsense-brand-name">SkinSense</div></div>',
-        unsafe_allow_html=True,
-    )
+    header = st.columns([0.75, 4.5, 2.2])
+    with header[0]:
+        if (BASE_DIR / "skinsense_logo.png").exists():
+            st.image(str(BASE_DIR / "skinsense_logo.png"), width=58)
+        else:
+            st.markdown('<div class="skinsense-logo">✚</div>', unsafe_allow_html=True)
+    with header[1]:
+        st.markdown('<div class="skinsense-brand-name">SkinSense</div>', unsafe_allow_html=True)
+    with header[2]:
+        st.caption(f"◉ {ui_text('choose_language')}")
+    st.divider()
+
     cols = st.columns([1, 1, 1])
     with cols[0]:
         if show_back and st.button(ui_text("back"), key=f"top_back_{back_to}", use_container_width=True):
@@ -759,35 +786,51 @@ def attempt_login(name: str) -> tuple[bool, str]:
 # -----------------------------------------------------------------------------
 
 def login_page() -> None:
-    left, center, right = st.columns([1, 6, 1])
-    with center:
+    header = st.columns([0.75, 4.5, 2.2])
+    with header[0]:
+        if (BASE_DIR / "skinsense_logo.png").exists():
+            st.image(str(BASE_DIR / "skinsense_logo.png"), width=62)
+        else:
+            st.markdown('<div class="skinsense-logo">✚</div>', unsafe_allow_html=True)
+    with header[1]:
+        st.markdown('<div class="skinsense-brand-name">SkinSense</div>', unsafe_allow_html=True)
+    with header[2]:
+        st.caption(f"◉ {ui_text('choose_language')}")
+    st.divider()
+
+    st.title("SkinSense")
+    st.markdown(f'<div class="page-intro">{ui_text("tagline")}</div>', unsafe_allow_html=True)
+
+    # Language is deliberately above the voice and name controls, matching the
+    # product flow shown in the approved mobile design.
+    language = st.radio(
+        ui_text("choose_language"),
+        ["English", "हिंदी", "मराठी"],
+        index=["English", "हिंदी", "मराठी"].index(st.session_state.get("language", "English")),
+        horizontal=True,
+        key="login_language",
+    )
+    st.session_state["language"] = language
+    voice_controls()
+
+    with st.container(border=True):
+        with st.form("login_form", clear_on_submit=False):
+            name = st.text_input(ui_text("name_label"), max_chars=MAX_NAME_LENGTH, key="login_name")
+            submitted = st.form_submit_button(ui_text("continue"), use_container_width=True)
+        if submitted:
+            with st.spinner("Opening SkinSense..."):
+                ok, message = attempt_login(name)
+            if ok:
+                st.rerun()
+            st.warning(message)
+    st.info(ui_text("disclaimer"))
+    with st.container(border=True):
         st.markdown(
-            '<div class="skinsense-brand"><div class="skinsense-logo">✚</div>'
-            '<div class="skinsense-brand-name">SkinSense</div></div>',
+            "<div class='privacy-copy'><strong>Privacy:</strong> SkinSense uses your uploaded photo only during this session. "
+            "Skin photos are not saved to Google Sheets. Your name and time of entry may be saved for basic usage tracking. "
+            "Please avoid uploading photos that show your face, private body areas, Aadhaar, phone number, or other personal details.</div>",
             unsafe_allow_html=True,
         )
-        st.title("SkinSense")
-        st.markdown(f'<div class="page-intro">{ui_text("tagline")}</div>', unsafe_allow_html=True)
-        with st.container(border=True):
-            with st.form("login_form", clear_on_submit=False):
-                language = st.radio(
-                    ui_text("choose_language"),
-                    ["English", "हिंदी", "मराठी"],
-                    index=["English", "हिंदी", "मराठी"].index(
-                        st.session_state.get("language", "English")
-                    ),
-                    horizontal=True,
-                )
-                name = st.text_input(ui_text("name_label"), max_chars=MAX_NAME_LENGTH, key="login_name")
-                submitted = st.form_submit_button(ui_text("continue"), use_container_width=True)
-            if submitted:
-                st.session_state["language"] = language
-                with st.spinner("Opening SkinSense..."):
-                    ok, message = attempt_login(name)
-                if ok:
-                    st.rerun()
-                st.warning(message)
-        st.info(ui_text("disclaimer"))
 
 
 def language_page() -> None:
@@ -818,25 +861,26 @@ def action_card(icon: str, title_key: str, help_key: str, destination: str) -> N
 
 
 def voice_controls() -> None:
-    """Render the three voice controls used by the home screen."""
-    voice_columns = st.columns(3)
+    """Render reliable native voice controls with visible status feedback."""
+    voice_columns = st.columns(2)
     controls = (
-        ("listen", "voice_listen", "Listening controls are ready."),
-        ("speak", "voice_speak", "Speak your request using your device microphone."),
-        ("say", "voice_say", "Say a command such as check my skin or find a dermatologist."),
+        ("🔊  Listen", "voice_listen", "Screen reading is ready on your device."),
+        ("🎙️  Speak", "voice_speak", "Use your device microphone to speak a request."),
     )
-    for column, (label_key, button_key, message) in zip(voice_columns, controls):
+    for column, (label, button_key, message) in zip(voice_columns, controls):
         with column:
-            if st.button(ui_text(label_key), key=button_key, use_container_width=True):
+            if st.button(label, key=button_key, use_container_width=True):
                 st.session_state["voice_status"] = message
+    if st.button("■  Stop", key="voice_stop", use_container_width=True):
+        st.session_state["voice_status"] = "Voice playback stopped."
     if st.session_state.get("voice_status"):
         st.caption(st.session_state["voice_status"])
 
 
 def home_page() -> None:
     top_nav(show_home=False)
-    st.title(f"{ui_text('welcome')}, {st.session_state.get('user_name', '')}")
-    st.markdown(f'<div class="page-intro">{ui_text("home_title")}</div>', unsafe_allow_html=True)
+    st.title(ui_text("home_title"))
+    st.markdown(f'<div class="page-intro">{ui_text("check_skin_help")}</div>', unsafe_allow_html=True)
     voice_controls()
     if st.session_state.get("submission_tracking_warning"):
         st.warning(st.session_state["submission_tracking_warning"])
